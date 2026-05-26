@@ -1,0 +1,204 @@
+import shutil
+from pathlib import Path
+
+import pandas as pd
+from openpyxl.cell.cell import MergedCell
+
+from app.excel_tools.formatter import apply_style_options
+from app.excel_tools.reader import load_workbook_safe
+from app.schemas.excel_plan import ExcelPlan, MetricPlan, SheetPlan
+
+
+def _sheet_headers(sheet) -> list[str]:
+    return [str(cell.value).strip() for cell in sheet[1] if cell.value is not None]
+
+
+def _append_columns(sheet, columns: list[str]) -> None:
+    existing_headers = _sheet_headers(sheet)
+    next_column = len(existing_headers) + 1
+    for column in columns:
+        if column in existing_headers:
+            continue
+        sheet.cell(row=1, column=next_column, value=column)
+        next_column += 1
+
+
+def _create_summary_from_source(workbook, plan: SheetPlan) -> None:
+    if not plan.source_sheet:
+        raise ValueError(f"Summary sheet '{plan.name}' requires source_sheet.")
+    if not plan.group_by:
+        raise ValueError(f"Summary sheet '{plan.name}' requires group_by.")
+    if not plan.metrics:
+        raise ValueError(f"Summary sheet '{plan.name}' requires metrics.")
+
+    source_sheet = workbook[plan.source_sheet]
+    data = source_sheet.values
+    headers = next(data, None)
+    if not headers:
+        raise ValueError(f"Source sheet '{plan.source_sheet}' has no header row.")
+
+    frame = pd.DataFrame(data, columns=headers)
+    agg_map: dict[str, tuple[str, str]] = {}
+    for metric in plan.metrics:
+        if metric.aggregation == "count":
+            agg_map[metric.name] = (metric.source_column, "count")
+        elif metric.aggregation == "avg":
+            agg_map[metric.name] = (metric.source_column, "mean")
+        else:
+            agg_map[metric.name] = (metric.source_column, metric.aggregation)
+
+    grouped = frame.groupby(plan.group_by, dropna=False).agg(**agg_map).reset_index()
+    if plan.name in workbook.sheetnames:
+        del workbook[plan.name]
+    summary_sheet = workbook.create_sheet(title=plan.name)
+    summary_sheet.append(list(grouped.columns))
+    for row in grouped.itertuples(index=False):
+        summary_sheet.append(list(row))
+    apply_style_options(summary_sheet, plan.style)
+
+
+def _format_existing_sheet(workbook, plan: SheetPlan) -> None:
+    target_name = plan.source_sheet or plan.name
+    if target_name not in workbook.sheetnames:
+        raise ValueError(f"Sheet '{target_name}' not found for formatting.")
+    apply_style_options(workbook[target_name], plan.style)
+
+
+def _clean_sheet(sheet, plan: SheetPlan) -> None:
+    if not plan.clean:
+        return
+
+    if plan.clean.trim_text:
+        for row in sheet.iter_rows():
+            for cell in row:
+                if isinstance(cell, MergedCell):
+                    continue
+                if isinstance(cell.value, str):
+                    cell.value = cell.value.strip()
+
+    if plan.clean.remove_empty_rows:
+        rows_to_delete: list[int] = []
+        start_row = plan.data_start_row or (plan.header_row + 1 if plan.header_row else 2)
+        for row_idx in range(start_row, sheet.max_row + 1):
+            values = [sheet.cell(row=row_idx, column=col_idx).value for col_idx in range(1, sheet.max_column + 1)]
+            if all(value in (None, "") for value in values):
+                rows_to_delete.append(row_idx)
+        for row_idx in reversed(rows_to_delete):
+            sheet.delete_rows(row_idx, 1)
+
+
+def _coerce_sort_value(value, numeric: bool):
+    if value is None:
+        return float("-inf") if numeric else ""
+    if not numeric:
+        return str(value)
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if isinstance(value, str):
+        normalized = value.replace("¥", "").replace("元", "").replace(",", "").strip()
+        try:
+            return float(normalized)
+        except ValueError:
+            return float("-inf")
+
+    return float("-inf")
+
+
+def _resolve_sort_column_index(sheet, plan: SheetPlan) -> int:
+    if not plan.sort:
+        raise ValueError("Sort operation requires sort configuration.")
+    header_row = plan.header_row or 1
+    for col_idx in range(1, sheet.max_column + 1):
+        header_value = sheet.cell(row=header_row, column=col_idx).value
+        if header_value is not None and str(header_value).strip() == plan.sort.column:
+            return col_idx
+    raise ValueError(f"Sort column '{plan.sort.column}' not found in header row {header_row}.")
+
+
+def _data_area_has_merged_cells(sheet, data_start_row: int, data_end_row: int) -> bool:
+    for merged_range in sheet.merged_cells.ranges:
+        if merged_range.max_row >= data_start_row and merged_range.min_row <= data_end_row:
+            return True
+    return False
+
+
+def _sort_sheet(sheet, plan: SheetPlan) -> None:
+    if not plan.sort:
+        raise ValueError("sort_rows operation requires sort configuration.")
+
+    header_row = plan.header_row or 1
+    data_start_row = plan.data_start_row or (header_row + 1)
+    data_end_row = plan.data_end_row or sheet.max_row
+    if data_start_row > data_end_row:
+        return
+
+    if _data_area_has_merged_cells(sheet, data_start_row, data_end_row):
+        raise ValueError("数据区域包含合并单元格，无法安全排序。")
+
+    sort_col_idx = _resolve_sort_column_index(sheet, plan)
+    rows = []
+    for row_idx in range(data_start_row, data_end_row + 1):
+        row_values = [sheet.cell(row=row_idx, column=col_idx).value for col_idx in range(1, sheet.max_column + 1)]
+        rows.append(row_values)
+
+    rows.sort(
+        key=lambda row: _coerce_sort_value(row[sort_col_idx - 1], plan.sort.numeric),
+        reverse=plan.sort.order == "desc",
+    )
+
+    for offset, row_values in enumerate(rows, start=data_start_row):
+        for col_idx, value in enumerate(row_values, start=1):
+            sheet.cell(row=offset, column=col_idx, value=value)
+
+
+def modify_workbook_from_plan(
+    plan: ExcelPlan,
+    uploaded_path: str | Path,
+    output_path: str | Path,
+) -> Path:
+    shutil.copy2(uploaded_path, output_path)
+    workbook = load_workbook_safe(output_path, data_only=False)
+
+    for sheet_plan in plan.sheets:
+        if sheet_plan.operation == "append_columns":
+            target_name = sheet_plan.source_sheet or sheet_plan.name
+            if target_name not in workbook.sheetnames:
+                raise ValueError(f"Sheet '{target_name}' not found for append_columns.")
+            _append_columns(workbook[target_name], sheet_plan.columns or [])
+            apply_style_options(workbook[target_name], sheet_plan.style)
+        elif sheet_plan.operation == "create_summary_sheet":
+            _create_summary_from_source(workbook, sheet_plan)
+        elif sheet_plan.operation == "format_sheet":
+            _format_existing_sheet(workbook, sheet_plan)
+        elif sheet_plan.operation == "clean_sheet":
+            target_name = sheet_plan.source_sheet or sheet_plan.name
+            if target_name not in workbook.sheetnames:
+                raise ValueError(f"Sheet '{target_name}' not found for clean_sheet.")
+            _clean_sheet(workbook[target_name], sheet_plan)
+        elif sheet_plan.operation == "sort_rows":
+            target_name = sheet_plan.source_sheet or sheet_plan.name
+            if target_name not in workbook.sheetnames:
+                raise ValueError(f"Sheet '{target_name}' not found for sort_rows.")
+            _sort_sheet(workbook[target_name], sheet_plan)
+        elif sheet_plan.operation == "format_and_sort_sheet":
+            target_name = sheet_plan.source_sheet or sheet_plan.name
+            if target_name not in workbook.sheetnames:
+                raise ValueError(f"Sheet '{target_name}' not found for format_and_sort_sheet.")
+            sheet = workbook[target_name]
+            _clean_sheet(sheet, sheet_plan)
+            _sort_sheet(sheet, sheet_plan)
+            apply_style_options(sheet, sheet_plan.style)
+        elif sheet_plan.operation == "create_sheet":
+            if sheet_plan.name in workbook.sheetnames:
+                raise ValueError(f"Sheet '{sheet_plan.name}' already exists.")
+            sheet = workbook.create_sheet(title=sheet_plan.name)
+            if sheet_plan.columns:
+                sheet.append(sheet_plan.columns)
+            apply_style_options(sheet, sheet_plan.style)
+        else:
+            raise ValueError(f"Unsupported operation: {sheet_plan.operation}")
+
+    workbook.save(output_path)
+    return Path(output_path)
