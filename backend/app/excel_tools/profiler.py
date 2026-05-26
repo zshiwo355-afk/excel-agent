@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from openpyxl.cell.cell import Cell
 
@@ -56,7 +57,12 @@ def _detect_header_row(sheet) -> tuple[int, list[str], list[dict[str, object]]]:
     return best_row, headers, candidate_headers
 
 
-def profile_workbook(file_path: str | Path) -> dict:
+def profile_workbook(
+    file_path: str | Path,
+    *,
+    file_id: str | None = None,
+    file_name: str | None = None,
+) -> dict[str, Any]:
     workbook = load_workbook_safe(file_path, data_only=False)
     sheets = []
     for sheet in workbook.worksheets:
@@ -94,8 +100,9 @@ def profile_workbook(file_path: str | Path) -> dict:
         )
 
     return {
+        "file_id": file_id,
         "file_path": str(Path(file_path).resolve()),
-        "file_name": Path(file_path).name,
+        "file_name": file_name or Path(file_path).name,
         "sheet_names": workbook.sheetnames,
         "sheets": sheets,
     }

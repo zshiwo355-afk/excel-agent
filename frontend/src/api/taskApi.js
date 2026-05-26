@@ -20,11 +20,18 @@ export const getTask = async (taskId) => {
   return data;
 };
 
-export const createTask = async ({ message, file }) => {
+export const createTask = async ({ message, file, files = [] }) => {
   const formData = new FormData();
   formData.append("message", message);
-  if (file) {
+  if (file && files.length <= 1) {
     formData.append("file", file);
+  }
+  if (files.length > 1) {
+    files.forEach((item) => {
+      if (item) {
+        formData.append("files", item);
+      }
+    });
   }
   const { data } = await apiClient.post("/tasks", formData, {
     headers: { "Content-Type": "multipart/form-data" },

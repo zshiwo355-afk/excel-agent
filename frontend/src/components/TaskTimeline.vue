@@ -24,18 +24,24 @@ const logs = computed(() => props.task?.execution_logs || props.task?.logs || []
 
 const patterns = [
   { keyword: "Task created.", label: "创建任务" },
-  { keyword: "Upload saved to", label: "上传文件" },
-  { keyword: "File analysis completed.", label: "分析文件" },
-  { keyword: "Detected sheets:", label: "识别 sheet" },
-  { keyword: "Detected header row:", label: "识别表头行" },
-  { keyword: "Detected data start row:", label: "识别数据起始行" },
+  { keyword: "Upload saved:", label: "上传文件" },
+  { keyword: "File analysis started.", label: "开始分析文件" },
+  { keyword: "Analyzing workbook:", label: "分析工作簿" },
+  { keyword: "Detected sheets in", label: "识别 sheet" },
+  { keyword: "File analysis completed.", label: "文件分析完成" },
   { keyword: "Calling planner model", label: "生成执行计划" },
+  { keyword: "Calling planner model to generate TaskPlan.", label: "生成任务拆解" },
   { keyword: "ExcelPlan validation passed.", label: "计划校验通过" },
+  { keyword: "Executing step", label: "执行步骤" },
+  { keyword: "Step validation:", label: "步骤校验" },
+  { keyword: "requires user confirmation", label: "等待步骤确认" },
+  { keyword: "Executing merge_workbooks.", label: "执行合并" },
+  { keyword: "Merging sheet", label: "合并来源 sheet" },
   { keyword: "Executing ExcelPlan.", label: "执行 ExcelPlan" },
-  { keyword: "Applying style to sheet:", label: "正在应用格式化" },
   { keyword: "Sorting sheet", label: "正在排序" },
-  { keyword: "Sort completed", label: "排序完成" },
-  { keyword: "Workbook validation completed", label: "输出校验完成" },
+  { keyword: "Expected merged rows:", label: "预期合并行数" },
+  { keyword: "Actual merged rows:", label: "实际合并行数" },
+  { keyword: "Merge validation completed", label: "合并校验完成" },
   { keyword: "Workbook written to", label: "文件生成成功" },
 ];
 
@@ -51,7 +57,7 @@ const steps = computed(() => {
     seen.add(key);
     matched.push({
       label: pattern.label,
-      detail: pattern.keyword === "Detected sheets:" || pattern.keyword === "Sorting sheet" ? log : "",
+      detail: log,
     });
   });
 

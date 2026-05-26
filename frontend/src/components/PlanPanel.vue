@@ -5,7 +5,24 @@
       <el-tag size="small" type="warning" effect="plain">{{ task?.status }}</el-tag>
     </div>
 
-    <ol class="plan-list">
+    <ol v-if="isMergePlan" class="plan-list">
+      <li>合并方式：纵向追加</li>
+      <li>目标 sheet：{{ mergePlan?.target_sheet_name || "合并明细" }}</li>
+      <li>来源文件数量：{{ task?.uploaded_files?.length || task?.uploaded_file_paths?.length || 0 }}</li>
+      <li>来源 sheet 数量：{{ mergePlan?.source_sheets?.length || 0 }}</li>
+      <li>是否增加来源列：{{ mergePlan?.add_source_columns ? "是" : "否" }}</li>
+      <li>字段对齐方式：{{ mappingMode }}</li>
+      <li v-if="task?.excel_plan?.notes?.length">备注：{{ task.excel_plan.notes.join("；") }}</li>
+    </ol>
+
+    <ol v-else class="plan-list">
+      <template v-if="isSplitPlan">
+        <li>操作类型：按字段拆分 sheet</li>
+        <li>源 sheet：{{ targetSheet }}</li>
+        <li>拆分字段：{{ primarySheet?.split?.column || "-" }}</li>
+        <li>输出方式：每个字段值一个 sheet</li>
+      </template>
+      <template v-else>
       <li>操作文件：{{ fileLabel }}</li>
       <li>操作 sheet：{{ targetSheet }}</li>
       <li>操作类型：{{ operationLabel }}</li>
@@ -14,6 +31,7 @@
       <li v-if="styleLabels.length">格式化：{{ styleLabels.join("、") }}</li>
       <li v-if="cleanLabels.length">清洗：{{ cleanLabels.join("、") }}</li>
       <li v-if="task?.excel_plan?.notes?.length">备注：{{ task.excel_plan.notes.join("；") }}</li>
+      </template>
     </ol>
 
     <div class="plan-actions">
@@ -50,6 +68,9 @@ const props = defineProps({
 
 defineEmits(["confirm"]);
 
+const isMergePlan = computed(() => props.task?.excel_plan?.action === "merge_workbooks");
+const isSplitPlan = computed(() => primarySheet.value?.operation === "split_sheet_by_column");
+const mergePlan = computed(() => props.task?.excel_plan?.merge || null);
 const primarySheet = computed(() => props.task?.excel_plan?.sheets?.[0] || null);
 
 const fileLabel = computed(() => {
@@ -60,6 +81,12 @@ const targetSheet = computed(() => {
   return primarySheet.value?.source_sheet || primarySheet.value?.name || "未指定";
 });
 
+const mappingMode = computed(() =>
+  mergePlan.value?.column_mapping && Object.keys(mergePlan.value.column_mapping).length
+    ? "字段映射"
+    : "字段并集",
+);
+
 const operationMap = {
   format_and_sort_sheet: "格式化并排序",
   format_sheet: "格式化表格",
@@ -68,12 +95,11 @@ const operationMap = {
   clean_sheet: "清洗表格",
   create_sheet: "新建工作表",
   append_columns: "新增字段",
+  split_sheet_by_column: "按字段拆分 sheet",
 };
 
 const operationLabel = computed(() => operationMap[primarySheet.value?.operation] || "执行任务");
-
 const sortLabel = computed(() => primarySheet.value?.sort?.column || "");
-
 const orderLabel = computed(() => {
   if (!primarySheet.value?.sort?.order) return "";
   return primarySheet.value.sort.order === "desc" ? "从高到低 / 降序" : "从低到高 / 升序";

@@ -15,9 +15,10 @@ def list_tasks() -> list[TaskDetail]:
 async def create_task(
     message: str = Form(...),
     file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
 ) -> TaskDetail:
     try:
-        return await task_service.create_task(message=message, upload=file)
+        return await task_service.create_task(message=message, upload=file, uploads=files)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

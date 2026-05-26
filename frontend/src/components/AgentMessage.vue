@@ -41,7 +41,7 @@ const props = defineProps({
 const statusType = computed(() => {
   if (props.status === "completed") return "success";
   if (props.status === "failed") return "danger";
-  if (props.status === "waiting_confirm") return "warning";
+  if (props.status === "waiting_confirm" || props.status === "waiting_step_confirm") return "warning";
   return "info";
 });
 </script>

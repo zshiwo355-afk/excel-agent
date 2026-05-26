@@ -91,7 +91,7 @@ watch(
 const statusType = (status) => {
   if (status === "completed") return "success";
   if (status === "failed") return "danger";
-  if (status === "waiting_confirm") return "warning";
+  if (status === "waiting_confirm" || status === "waiting_step_confirm") return "warning";
   return "info";
 };
 
@@ -105,7 +105,12 @@ const formatTime = (value) => {
   return new Date(value).toLocaleString();
 };
 
-const uploadedName = (task) => task?.uploaded_file_path?.split("/").pop() || "";
+const uploadedName = (task) => {
+  if (task?.uploaded_files?.length) {
+    return task.uploaded_files.map((item) => item.file_name).join("、");
+  }
+  return task?.uploaded_file_path?.split("/").pop() || "";
+};
 
 const normalizeMessage = (message) => {
   if (!message) return "未命名任务";

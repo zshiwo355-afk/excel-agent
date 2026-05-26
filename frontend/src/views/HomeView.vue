@@ -14,7 +14,9 @@
           <template v-if="showDraftMessage">
             <AgentMessage role="user" :time="nowLabel">
               <div class="user-copy">{{ draftRequest.message }}</div>
-              <div v-if="draftRequest.fileName" class="user-file">附件：{{ draftRequest.fileName }}</div>
+              <div v-if="draftRequest.fileNames.length" class="user-file">
+                已选择 {{ draftRequest.fileNames.length }} 个文件：{{ draftRequest.fileNames.join("、") }}
+              </div>
             </AgentMessage>
             <AgentMessage title="正在创建任务" status="planning">
               <p class="agent-copy">已收到任务，正在创建并准备分析表格。</p>
@@ -24,22 +26,23 @@
           <template v-else-if="activeTask">
             <AgentMessage role="user" :time="formatTime(activeTask.created_at)">
               <div class="user-copy">{{ activeTask.message }}</div>
-              <div v-if="uploadedFileName" class="user-file">附件：{{ uploadedFileName }}</div>
+              <div v-if="uploadedFileNames.length" class="user-file">
+                已选择 {{ uploadedFileNames.length }} 个文件：{{ uploadedFileNames.join("、") }}
+              </div>
             </AgentMessage>
 
             <AgentMessage title="任务已接收" :status="activeTask.status" :time="formatTime(activeTask.updated_at)">
-              <p class="agent-copy">已收到任务{{ uploadedFileName ? `，已上传文件：${uploadedFileName}` : "。"}} </p>
+              <p class="agent-copy">
+                已收到任务{{ uploadedFileNames.length ? `，共上传 ${uploadedFileNames.length} 个文件` : "。" }}
+              </p>
             </AgentMessage>
 
-            <AgentMessage v-if="activeTask.workbook_context" title="表格结构分析" :status="activeTask.status">
+            <AgentMessage v-if="activeTask.workbook_contexts?.length" title="表格结构分析" :status="activeTask.status">
               <div class="analysis-list">
-                <div>识别到 sheet：{{ sheetNames }}</div>
-                <div v-if="primarySheetContext">表头行：第 {{ primarySheetContext.header_row || "-" }} 行</div>
-                <div v-if="primarySheetContext">数据开始行：第 {{ primarySheetContext.data_start_row || "-" }} 行</div>
-                <div v-if="primarySheetContext">
-                  是否存在合并单元格：{{ primarySheetContext.has_merged_cells ? "是" : "否" }}
+                <div>已分析工作簿：{{ activeTask.workbook_contexts.length }}</div>
+                <div v-for="context in activeTask.workbook_contexts" :key="context.file_id || context.file_name">
+                  {{ context.file_name }}：{{ context.sheet_names?.join("、") || "未识别" }}
                 </div>
-                <div v-if="primarySheetContext?.has_merged_cells">已启用安全处理模式</div>
               </div>
             </AgentMessage>
 
@@ -51,11 +54,15 @@
               />
             </AgentMessage>
 
-            <AgentMessage
-              v-if="timelineVisible"
-              title="执行进度"
-              :status="activeTask.status"
-            >
+            <AgentMessage v-if="activeTask.task_plan" title="任务拆解" :status="activeTask.status">
+              <TaskPlanPanel
+                :task="activeTask"
+                :confirm-loading="confirming"
+                @confirm="handleConfirmTask"
+              />
+            </AgentMessage>
+
+            <AgentMessage v-if="timelineVisible" title="执行进度" :status="activeTask.status">
               <TaskTimeline :task="activeTask" />
               <DebugDetails :sections="debugSections" />
             </AgentMessage>
@@ -71,14 +78,14 @@
 
           <div v-else class="welcome-card">
             <div class="welcome-title">开始一个新的 Excel 任务</div>
-            <p>在下方输入需求，或上传一个 `.xlsx` 后让 Agent 修改、排序、汇总或格式化。</p>
+            <p>在下方输入需求，上传一个或多个 `.xlsx`，让 Agent 修改、排序、格式化或合并成总表。</p>
           </div>
         </div>
       </div>
 
       <ChatPanel
         :message="message"
-        :file-name="uploadFileName"
+        :file-names="uploadFileNames"
         :loading="creating"
         @update:message="message = $event"
         @file-change="handleFileChange"
@@ -98,19 +105,14 @@ import DebugDetails from "../components/DebugDetails.vue";
 import PlanPanel from "../components/PlanPanel.vue";
 import ResultPanel from "../components/ResultPanel.vue";
 import TaskHistory from "../components/TaskHistory.vue";
+import TaskPlanPanel from "../components/TaskPlanPanel.vue";
 import TaskTimeline from "../components/TaskTimeline.vue";
-import {
-  confirmTask,
-  createTask,
-  getDownloadUrl,
-  getTask,
-  listTasks,
-} from "../api/taskApi";
+import { confirmTask, createTask, getDownloadUrl, getTask, listTasks } from "../api/taskApi";
 
 const tasks = ref([]);
 const activeTaskId = ref("");
 const message = ref("");
-const uploadFile = ref(null);
+const uploadFiles = ref([]);
 const creating = ref(false);
 const confirming = ref(false);
 const draftRequest = ref(null);
@@ -119,18 +121,18 @@ const activeTask = computed(
   () => tasks.value.find((item) => item.task_id === activeTaskId.value) || null,
 );
 
-const uploadFileName = computed(() => uploadFile.value?.name || "");
-const uploadedFileName = computed(
-  () => activeTask.value?.uploaded_file_path?.split("/").pop() || "",
-);
+const uploadFileNames = computed(() => uploadFiles.value.map((item) => item.name).filter(Boolean));
+const uploadedFileNames = computed(() => {
+  if (activeTask.value?.uploaded_files?.length) {
+    return activeTask.value.uploaded_files.map((item) => item.file_name);
+  }
+  if (activeTask.value?.uploaded_file_path) {
+    return [activeTask.value.uploaded_file_path.split("/").pop()];
+  }
+  return [];
+});
 const downloadUrl = computed(() =>
   activeTaskId.value ? getDownloadUrl(activeTaskId.value) : "",
-);
-const primarySheetContext = computed(
-  () => activeTask.value?.workbook_context?.sheets?.[0] || null,
-);
-const sheetNames = computed(() =>
-  activeTask.value?.workbook_context?.sheet_names?.join("、") || "未识别",
 );
 const showDraftMessage = computed(() => creating.value && draftRequest.value);
 const nowLabel = computed(() => new Date().toLocaleString());
@@ -146,7 +148,13 @@ const debugSections = computed(() => [
   },
   {
     title: "查看 Workbook 分析",
-    content: activeTask.value?.workbook_context || null,
+    content: activeTask.value?.workbook_contexts?.length
+      ? activeTask.value?.workbook_contexts
+      : activeTask.value?.workbook_context || null,
+  },
+  {
+    title: "查看 TaskPlan JSON",
+    content: activeTask.value?.task_plan || null,
   },
   {
     title: "查看 ExcelPlan JSON",
@@ -193,15 +201,19 @@ const handleCreateTask = async () => {
   creating.value = true;
   draftRequest.value = {
     message: trimmed,
-    fileName: uploadFile.value?.name || "",
+    fileNames: uploadFileNames.value,
   };
   try {
-    const task = await createTask({ message: trimmed, file: uploadFile.value });
+    const task = await createTask({
+      message: trimmed,
+      file: uploadFiles.value[0] || null,
+      files: uploadFiles.value,
+    });
     await fetchTasks();
     activeTaskId.value = task.task_id;
     await refreshTask(task.task_id);
     message.value = "";
-    uploadFile.value = null;
+    uploadFiles.value = [];
     draftRequest.value = null;
     ElMessage.success(task.status === "failed" ? "任务创建失败" : "执行计划已生成");
   } catch (error) {
@@ -226,8 +238,8 @@ const handleConfirmTask = async () => {
   }
 };
 
-const handleFileChange = (file) => {
-  uploadFile.value = file;
+const handleFileChange = (files) => {
+  uploadFiles.value = files || [];
 };
 
 const selectTask = async (taskId) => {
@@ -237,7 +249,7 @@ const selectTask = async (taskId) => {
 const startNewTask = () => {
   activeTaskId.value = "";
   message.value = "";
-  uploadFile.value = null;
+  uploadFiles.value = [];
   draftRequest.value = null;
 };
 
