@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     app_name: str = "Excel Agent Studio API"
     app_env: str = "development"
     use_mock_llm: bool = Field(default=False, alias="USE_MOCK_LLM")
+    auto_execute_default: bool = Field(default=True, alias="EXCEL_AGENT_AUTO_EXECUTE")
+    excel_agent_step_debug_delay_ms: int = Field(default=0, alias="EXCEL_AGENT_STEP_DEBUG_DELAY_MS")
     deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
     deepseek_base_url: str = Field(
         default="https://api.deepseek.com/v1",

@@ -33,9 +33,11 @@ body {
 }
 
 .history-shell {
-  padding: 18px 14px;
-  border-right: 1px solid #e5e7eb;
-  background: #f8fafc;
+  padding: 20px 16px;
+  border-right: 1px solid #dde6ef;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.9), transparent 34%),
+    linear-gradient(180deg, #f6f8fb 0%, #eef3f8 100%);
 }
 
 .history-top,
@@ -45,8 +47,7 @@ body {
 .composer-actions,
 .plan-head,
 .plan-actions,
-.result-actions,
-.entry-meta {
+.result-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -65,32 +66,7 @@ body {
 }
 
 .history-actions {
-  margin: 12px 0 10px;
-}
-
-.history-entry {
-  padding: 12px;
-  margin-bottom: 10px;
-  border-radius: 14px;
-  border: 1px solid transparent;
-  cursor: pointer;
-}
-
-.history-entry:hover,
-.history-entry.active {
-  background: #ffffff;
-  border-color: #dbe4f0;
-}
-
-.entry-title {
-  font-size: 13px;
-  line-height: 1.5;
-  margin-bottom: 8px;
-}
-
-.entry-meta {
-  color: #6b7280;
-  font-size: 12px;
+  margin: 14px 0 14px;
 }
 
 .conversation-panel {
@@ -200,6 +176,21 @@ body {
   color: #2e7d32;
   font-size: 12px;
   flex: 0 0 22px;
+}
+
+.timeline-icon.is-running {
+  background: #fff3cd;
+  color: #9a6700;
+}
+
+.timeline-icon.is-failed {
+  background: #fdecea;
+  color: #c2410c;
+}
+
+.timeline-icon.is-completed {
+  background: #e8f5e9;
+  color: #2e7d32;
 }
 
 .timeline-detail {

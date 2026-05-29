@@ -1,10 +1,11 @@
 <template>
   <div class="timeline-list">
     <div v-for="(step, index) in steps" :key="`${index}-${step.label}`" class="timeline-item">
-      <span class="timeline-icon">✓</span>
+      <span class="timeline-icon" :class="statusClass(step.status)">{{ statusIcon(step.status) }}</span>
       <div>
         <div class="timeline-label">{{ step.label }}</div>
         <div v-if="step.detail" class="timeline-detail">{{ step.detail }}</div>
+        <div v-if="step.resultSummary" class="timeline-detail">{{ step.resultSummary }}</div>
       </div>
     </div>
   </div>
@@ -21,6 +22,7 @@ const props = defineProps({
 });
 
 const logs = computed(() => props.task?.execution_logs || props.task?.logs || []);
+const executionSteps = computed(() => props.task?.execution_steps || []);
 
 const patterns = [
   { keyword: "Task created.", label: "创建任务" },
@@ -46,6 +48,15 @@ const patterns = [
 ];
 
 const steps = computed(() => {
+  if (executionSteps.value.length) {
+    return executionSteps.value.map((step) => ({
+      label: step.title,
+      detail: step.detail,
+      status: step.status,
+      resultSummary: step.result_summary,
+    }));
+  }
+
   const matched = [];
   const seen = new Set();
 
@@ -58,6 +69,7 @@ const steps = computed(() => {
     matched.push({
       label: pattern.label,
       detail: log,
+      status: "completed",
     });
   });
 
@@ -66,4 +78,16 @@ const steps = computed(() => {
   }
   return matched;
 });
+
+const statusClass = (status) => {
+  if (status === "running") return "is-running";
+  if (status === "failed") return "is-failed";
+  return "is-completed";
+};
+
+const statusIcon = (status) => {
+  if (status === "running") return "…";
+  if (status === "failed") return "!";
+  return "✓";
+};
 </script>

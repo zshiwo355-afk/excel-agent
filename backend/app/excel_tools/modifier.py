@@ -1,10 +1,17 @@
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 from openpyxl.cell.cell import MergedCell
 
-from app.excel_tools.formatter import apply_style_options
+from app.excel_tools.formatter import (
+    apply_auto_filter,
+    apply_auto_width,
+    apply_freeze_header,
+    apply_header_bold,
+    apply_style_options,
+)
 from app.excel_tools.reader import load_workbook_safe
 from app.schemas.excel_plan import ExcelPlan, MetricPlan, SheetPlan
 
@@ -153,6 +160,56 @@ def _sort_sheet(sheet, plan: SheetPlan) -> None:
             sheet.cell(row=offset, column=col_idx, value=value)
 
 
+def resolve_target_date_columns(sheet, plan: SheetPlan) -> list[int]:
+    header_row = plan.header_row or 1
+    headers = [
+        str(sheet.cell(row=header_row, column=col_idx).value).strip()
+        if sheet.cell(row=header_row, column=col_idx).value is not None
+        else ""
+        for col_idx in range(1, sheet.max_column + 1)
+    ]
+    requested = plan.date_update.target_columns if plan.date_update else []
+    if requested:
+        return [
+            idx
+            for idx, header in enumerate(headers, start=1)
+            if header and header in requested
+        ]
+    return [
+        idx
+        for idx, header in enumerate(headers, start=1)
+        if header and "日期" in header
+    ]
+
+
+def _update_date_month(sheet, plan: SheetPlan) -> dict[str, object]:
+    if not plan.date_update:
+        raise ValueError("update_date_month requires date_update.")
+    target_columns = resolve_target_date_columns(sheet, plan)
+    if not target_columns:
+        raise ValueError("未找到日期列，请确认表头中包含“日期”字段。")
+
+    data_start_row = plan.data_start_row or ((plan.header_row or 1) + 1)
+    updated_cells = 0
+    for row_idx in range(data_start_row, sheet.max_row + 1):
+        for col_idx in target_columns:
+            cell = sheet.cell(row=row_idx, column=col_idx)
+            value = cell.value
+            if isinstance(value, datetime):
+                cell.value = value.replace(month=plan.date_update.target_month)
+                updated_cells += 1
+                continue
+            if isinstance(value, str):
+                normalized = value.strip().replace("/", "-").replace(".", "-")
+                try:
+                    parsed = datetime.fromisoformat(normalized)
+                except ValueError:
+                    continue
+                cell.value = parsed.replace(month=plan.date_update.target_month)
+                updated_cells += 1
+    return {"updated_cells": updated_cells, "target_columns": target_columns}
+
+
 def modify_workbook_from_plan(
     plan: ExcelPlan,
     uploaded_path: str | Path,
@@ -197,8 +254,98 @@ def modify_workbook_from_plan(
             if sheet_plan.columns:
                 sheet.append(sheet_plan.columns)
             apply_style_options(sheet, sheet_plan.style)
+        elif sheet_plan.operation == "update_date_month":
+            target_name = sheet_plan.source_sheet or sheet_plan.name
+            if target_name not in workbook.sheetnames:
+                raise ValueError(f"Sheet '{target_name}' not found for update_date_month.")
+            _update_date_month(workbook[target_name], sheet_plan)
         else:
             raise ValueError(f"Unsupported operation: {sheet_plan.operation}")
 
     workbook.save(output_path)
     return Path(output_path)
+
+
+def copy_workbook_for_simple_execution(uploaded_path: str | Path, output_path: str | Path):
+    shutil.copy2(uploaded_path, output_path)
+    return load_workbook_safe(output_path, data_only=False)
+
+
+def save_simple_execution_workbook(workbook, output_path: str | Path) -> Path:
+    workbook.save(output_path)
+    return Path(output_path)
+
+
+def apply_named_style_step(sheet, action_name: str) -> None:
+    if action_name == "freeze_header":
+        apply_freeze_header(sheet)
+        return
+    if action_name == "auto_filter":
+        apply_auto_filter(sheet)
+        return
+    if action_name == "auto_width":
+        apply_auto_width(sheet)
+        return
+    if action_name == "header_bold":
+        apply_header_bold(sheet)
+        return
+    raise ValueError(f"Unsupported style action: {action_name}")
+
+
+def execute_simple_sheet_operation(workbook, sheet_plan: SheetPlan) -> None:
+    if sheet_plan.operation == "append_columns":
+        target_name = sheet_plan.source_sheet or sheet_plan.name
+        if target_name not in workbook.sheetnames:
+            raise ValueError(f"Sheet '{target_name}' not found for append_columns.")
+        _append_columns(workbook[target_name], sheet_plan.columns or [])
+        return
+
+    if sheet_plan.operation == "create_summary_sheet":
+        _create_summary_from_source(workbook, sheet_plan)
+        return
+
+    if sheet_plan.operation == "format_sheet":
+        target_name = sheet_plan.source_sheet or sheet_plan.name
+        if target_name not in workbook.sheetnames:
+            raise ValueError(f"Sheet '{target_name}' not found for format_sheet.")
+        return
+
+    if sheet_plan.operation == "clean_sheet":
+        target_name = sheet_plan.source_sheet or sheet_plan.name
+        if target_name not in workbook.sheetnames:
+            raise ValueError(f"Sheet '{target_name}' not found for clean_sheet.")
+        _clean_sheet(workbook[target_name], sheet_plan)
+        return
+
+    if sheet_plan.operation == "sort_rows":
+        target_name = sheet_plan.source_sheet or sheet_plan.name
+        if target_name not in workbook.sheetnames:
+            raise ValueError(f"Sheet '{target_name}' not found for sort_rows.")
+        _sort_sheet(workbook[target_name], sheet_plan)
+        return
+
+    if sheet_plan.operation == "format_and_sort_sheet":
+        target_name = sheet_plan.source_sheet or sheet_plan.name
+        if target_name not in workbook.sheetnames:
+            raise ValueError(f"Sheet '{target_name}' not found for format_and_sort_sheet.")
+        sheet = workbook[target_name]
+        _clean_sheet(sheet, sheet_plan)
+        _sort_sheet(sheet, sheet_plan)
+        return
+
+    if sheet_plan.operation == "create_sheet":
+        if sheet_plan.name in workbook.sheetnames:
+            raise ValueError(f"Sheet '{sheet_plan.name}' already exists.")
+        sheet = workbook.create_sheet(title=sheet_plan.name)
+        if sheet_plan.columns:
+            sheet.append(sheet_plan.columns)
+        return
+
+    if sheet_plan.operation == "update_date_month":
+        target_name = sheet_plan.source_sheet or sheet_plan.name
+        if target_name not in workbook.sheetnames:
+            raise ValueError(f"Sheet '{target_name}' not found for update_date_month.")
+        _update_date_month(workbook[target_name], sheet_plan)
+        return
+
+    raise ValueError(f"Unsupported operation: {sheet_plan.operation}")

@@ -2,7 +2,7 @@
   <div class="plan-summary">
     <div class="plan-head">
       <div class="plan-title">任务拆解</div>
-      <el-tag size="small" type="warning" effect="plain">{{ task?.status }}</el-tag>
+      <el-tag size="small" :type="statusType" effect="plain">{{ displayStatus }}</el-tag>
     </div>
 
     <div class="plan-list">
@@ -32,7 +32,7 @@
 
     <div class="plan-actions">
       <el-button
-        v-if="task?.status === 'waiting_confirm' || task?.status === 'waiting_step_confirm'"
+        v-if="task?.status === 'waiting_step_confirm' || (task?.status === 'waiting_confirm' && task?.auto_execute === false)"
         type="primary"
         :loading="confirmLoading"
         @click="$emit('confirm')"
@@ -44,7 +44,9 @@
 </template>
 
 <script setup>
-defineProps({
+import { computed } from "vue";
+
+const props = defineProps({
   task: {
     type: Object,
     default: null,
@@ -56,6 +58,9 @@ defineProps({
 });
 
 defineEmits(["confirm"]);
+
+const displayStatus = computed(() => props.task?.task_plan ? "completed" : "pending");
+const statusType = computed(() => displayStatus.value === "completed" ? "success" : "info");
 
 const formatJson = (value) => JSON.stringify(value, null, 2);
 </script>

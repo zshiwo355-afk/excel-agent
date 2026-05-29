@@ -20,9 +20,12 @@ export const getTask = async (taskId) => {
   return data;
 };
 
-export const createTask = async ({ message, file, files = [] }) => {
+export const createTask = async ({ message, file, files = [], autoExecute = true }) => {
   const formData = new FormData();
   formData.append("message", message);
+  if (typeof autoExecute === "boolean") {
+    formData.append("auto_execute", String(autoExecute));
+  }
   if (file && files.length <= 1) {
     formData.append("file", file);
   }

@@ -81,6 +81,64 @@ def _validate_split_sheet_plan(state: AgentState, plan: ExcelPlan) -> None:
             raise ValueError("未找到用于拆分的字段，请确认表头中是否包含公司/客户/销售客户/门店等字段。")
 
 
+def _find_sheet_context_in_workbooks(state: AgentState, file_id: str, sheet_name: str) -> dict | None:
+    for workbook in state.workbook_contexts:
+        if workbook.get("file_id") != file_id:
+            continue
+        for sheet in workbook.get("sheets", []):
+            if sheet.get("name") == sheet_name:
+                return sheet
+    return None
+
+
+def _validate_template_sheet_plan(state: AgentState, plan: ExcelPlan) -> None:
+    for sheet_plan in plan.sheets:
+        if sheet_plan.operation != "apply_template_sheet":
+            continue
+        if not sheet_plan.template:
+            raise ValueError("apply_template_sheet 缺少 template 配置。")
+        template = sheet_plan.template
+        source_sheet_name = template.source_sheet or sheet_plan.source_sheet
+        if not source_sheet_name:
+            raise ValueError("apply_template_sheet 缺少 source_sheet。")
+        source_context = _find_sheet_context_in_workbooks(
+            state,
+            template.source_file_id or "file_1",
+            source_sheet_name,
+        )
+        if not source_context:
+            raise ValueError("模板整理的数据源 sheet 不存在。")
+        template_context = _find_sheet_context_in_workbooks(
+            state,
+            template.template_file_id,
+            template.template_sheet,
+        )
+        if not template_context:
+            raise ValueError("模板整理的模板 sheet 不存在。")
+        if sheet_plan.sort:
+            source_headers = source_context.get("headers", [])
+            if sheet_plan.sort.column not in source_headers and sheet_plan.sort.column not in (template.column_mapping or {}):
+                raise ValueError("模板整理计划中的排序字段不存在。")
+
+
+def _validate_sort_plan(state: AgentState, plan: ExcelPlan) -> None:
+    for sheet_plan in plan.sheets:
+        if sheet_plan.operation not in {"sort_rows", "format_and_sort_sheet", "apply_template_sheet"}:
+            continue
+        if not sheet_plan.sort:
+            raise ValueError("排序任务缺少排序列，请指定按哪一列排序。")
+        if not sheet_plan.sort.column or not sheet_plan.sort.order:
+            raise ValueError("排序任务缺少排序列或排序方向，请补充排序要求。")
+        source_sheet_name = sheet_plan.source_sheet or sheet_plan.name
+        if sheet_plan.operation == "apply_template_sheet":
+            continue
+        sheet_context = _find_sheet_context(state, source_sheet_name)
+        if sheet_context:
+            source_headers = sheet_context.get("headers", [])
+            if sheet_plan.sort.column not in source_headers:
+                raise ValueError(f"未找到排序列 '{sheet_plan.sort.column}'，请确认表头名称。")
+
+
 def plan_validate_node(state: AgentState) -> AgentState:
     state = AgentState.model_validate(state)
     if state.status == "failed":
@@ -101,6 +159,8 @@ def plan_validate_node(state: AgentState) -> AgentState:
             if not plan.sheets:
                 raise ValueError("ExcelPlan sheets cannot be empty.")
             _validate_split_sheet_plan(state, plan)
+            _validate_template_sheet_plan(state, plan)
+            _validate_sort_plan(state, plan)
         elif plan.action == "create_workbook":
             if not plan.sheets:
                 raise ValueError("ExcelPlan sheets cannot be empty.")

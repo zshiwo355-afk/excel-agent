@@ -2,6 +2,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.execution_step import ExecutionStep
+
 
 class AgentState(BaseModel):
     task_id: str
@@ -23,6 +25,7 @@ class AgentState(BaseModel):
     last_step_result: dict[str, Any] | None = None
     raw_llm_response: dict[str, Any] | str | None = None
     output_file_path: str | None = None
+    execution_steps: list[ExecutionStep] = Field(default_factory=list)
     status: str = "planning"
     logs: list[str] = Field(default_factory=list)
     error: str | None = None

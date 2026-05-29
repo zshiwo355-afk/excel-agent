@@ -2,7 +2,7 @@
   <div class="plan-summary">
     <div class="plan-head">
       <div class="plan-title">执行计划</div>
-      <el-tag size="small" type="warning" effect="plain">{{ task?.status }}</el-tag>
+      <el-tag size="small" :type="statusType" effect="plain">{{ displayStatus }}</el-tag>
     </div>
 
     <ol v-if="isMergePlan" class="plan-list">
@@ -26,6 +26,7 @@
       <li>操作文件：{{ fileLabel }}</li>
       <li>操作 sheet：{{ targetSheet }}</li>
       <li>操作类型：{{ operationLabel }}</li>
+      <li v-if="dateUpdateLabel">目标修改：{{ dateUpdateLabel }}</li>
       <li v-if="sortLabel">排序字段：{{ sortLabel }}</li>
       <li v-if="orderLabel">排序方向：{{ orderLabel }}</li>
       <li v-if="styleLabels.length">格式化：{{ styleLabels.join("、") }}</li>
@@ -36,7 +37,7 @@
 
     <div class="plan-actions">
       <el-button
-        v-if="task?.status === 'waiting_confirm'"
+        v-if="task?.status === 'waiting_confirm' && task?.auto_execute === false"
         type="primary"
         :loading="confirmLoading"
         @click="$emit('confirm')"
@@ -72,6 +73,8 @@ const isMergePlan = computed(() => props.task?.excel_plan?.action === "merge_wor
 const isSplitPlan = computed(() => primarySheet.value?.operation === "split_sheet_by_column");
 const mergePlan = computed(() => props.task?.excel_plan?.merge || null);
 const primarySheet = computed(() => props.task?.excel_plan?.sheets?.[0] || null);
+const displayStatus = computed(() => props.task?.excel_plan ? "completed" : "pending");
+const statusType = computed(() => displayStatus.value === "completed" ? "success" : "info");
 
 const fileLabel = computed(() => {
   return props.task?.uploaded_file_path?.split("/").pop() || props.task?.excel_plan?.workbook_name || "新建工作簿";
@@ -96,6 +99,7 @@ const operationMap = {
   create_sheet: "新建工作表",
   append_columns: "新增字段",
   split_sheet_by_column: "按字段拆分 sheet",
+  update_date_month: "修改日期字段",
 };
 
 const operationLabel = computed(() => operationMap[primarySheet.value?.operation] || "执行任务");
@@ -121,6 +125,12 @@ const cleanLabels = computed(() => {
     clean.remove_empty_rows ? "删除空行" : "",
     clean.trim_text ? "去除文本空格" : "",
   ].filter(Boolean);
+});
+
+const dateUpdateLabel = computed(() => {
+  const plan = primarySheet.value?.date_update;
+  if (!plan?.target_month) return "";
+  return `将日期月份修改为 ${plan.target_month} 月`;
 });
 
 const formatJson = (value) => {

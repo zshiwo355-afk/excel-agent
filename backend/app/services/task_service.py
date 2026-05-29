@@ -10,7 +10,9 @@ from app.agent.graph import execute_graph, plan_graph
 from app.agent.state import AgentState
 from app.config import get_settings
 from app.services.file_service import file_service
+from app.schemas.execution_step import ExecutionStep
 from app.schemas.task import TaskDetail
+from app.utils.jsonable import to_jsonable
 
 
 class TaskService:
@@ -25,11 +27,41 @@ class TaskService:
 
     def save_task(self, task: TaskDetail) -> TaskDetail:
         path = self._task_path(task.task_id)
+        payload = to_jsonable(task.model_dump(mode="python"))
         path.write_text(
-            json.dumps(task.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         return task
+
+    def save_runtime_state(self, state: AgentState) -> None:
+        try:
+            task = self.get_task(state.task_id)
+        except FileNotFoundError:
+            return
+
+        task.status = state.status
+        task.output_file_path = state.output_file_path
+        task.workbook_context = state.workbook_context
+        task.workbook_contexts = state.workbook_contexts
+        task.excel_plan = state.excel_plan
+        task.task_plan = state.task_plan
+        task.task_mode = state.task_mode
+        task.step_artifacts = state.step_artifacts
+        task.current_step_index = state.current_step_index
+        task.confirmed_step_ids = state.confirmed_step_ids
+        task.pending_step_id = state.pending_step_id
+        task.error = state.error
+        task.error_message = state.error_message
+        task.technical_error = state.technical_error
+        task.raw_llm_response = state.raw_llm_response
+        task.execution_steps = [
+            step if isinstance(step, ExecutionStep) else ExecutionStep.model_validate(step)
+            for step in state.execution_steps
+        ]
+        task.logs = state.logs
+        task.updated_at = self._now()
+        self.save_task(task)
 
     def get_task(self, task_id: str) -> TaskDetail:
         path = self._task_path(task_id)
@@ -57,6 +89,7 @@ class TaskService:
         message: str,
         upload: UploadFile | None,
         uploads: list[UploadFile] | None = None,
+        auto_execute: bool | None = None,
     ) -> TaskDetail:
         if not message.strip():
             raise ValueError("message cannot be empty.")
@@ -82,6 +115,7 @@ class TaskService:
             task_id=task_id,
             message=message,
             status="planning",
+            auto_execute=self.settings.auto_execute_default if auto_execute is None else auto_execute,
             uploaded_file_path=uploaded_file_path,
             uploaded_file_paths=uploaded_file_paths,
             uploaded_files=uploaded_files,
@@ -113,6 +147,7 @@ class TaskService:
             task.current_step_index = result.current_step_index
             task.confirmed_step_ids = result.confirmed_step_ids
             task.raw_llm_response = result.raw_llm_response
+            task.execution_steps = result.execution_steps
             task.logs = result.logs
             task.error = result.error
             task.error_message = result.error_message
@@ -127,8 +162,14 @@ class TaskService:
         task.updated_at = self._now()
         return self.save_task(task)
 
-    def confirm_task(self, task_id: str) -> TaskDetail:
+    def start_task_execution(self, task_id: str) -> TaskDetail:
         task = self.get_task(task_id)
+        if task.status == "running":
+            raise ValueError("Task is already running.")
+        if task.status == "completed":
+            raise ValueError("Task has already completed.")
+        if task.status == "failed":
+            raise ValueError("Task has failed. Retry is not supported yet.")
         if task.status not in {"waiting_confirm", "waiting_step_confirm"}:
             raise ValueError("Task status must be waiting_confirm or waiting_step_confirm before execution.")
         if not task.excel_plan and not task.task_plan:
@@ -140,9 +181,16 @@ class TaskService:
                 confirmed_step_ids.append(task.pending_step_id)
 
         task.status = "running"
+        task.error = None
+        task.error_message = None
+        task.technical_error = None
+        task.confirmed_step_ids = confirmed_step_ids
         task.updated_at = self._now()
-        self.save_task(task)
+        return self.save_task(task)
 
+    def run_task_execution(self, task_id: str) -> None:
+        task = self.get_task(task_id)
+        confirmed_step_ids = list(task.confirmed_step_ids)
         try:
             state = AgentState(
                 task_id=task.task_id,
@@ -159,6 +207,7 @@ class TaskService:
                 current_step_index=task.current_step_index,
                 pending_step_id=task.pending_step_id,
                 confirmed_step_ids=confirmed_step_ids,
+                execution_steps=task.execution_steps,
                 logs=task.logs.copy(),
                 status=task.status,
             )
@@ -170,6 +219,7 @@ class TaskService:
             task.step_artifacts = result.step_artifacts
             task.current_step_index = result.current_step_index
             task.confirmed_step_ids = result.confirmed_step_ids
+            task.execution_steps = result.execution_steps
             task.logs = result.logs
             if result.status == "failed":
                 task.error = result.error or "Excel 生成失败"
@@ -180,6 +230,17 @@ class TaskService:
                 task.error_message = None
                 task.technical_error = None
         except Exception as exc:
+            try:
+                persisted = self.get_task(task_id)
+                task.execution_steps = persisted.execution_steps
+                task.logs = persisted.logs
+                task.task_plan = persisted.task_plan
+                task.step_artifacts = persisted.step_artifacts
+                task.current_step_index = persisted.current_step_index
+                task.confirmed_step_ids = persisted.confirmed_step_ids
+                task.pending_step_id = persisted.pending_step_id
+            except Exception:
+                pass
             task.status = "failed"
             task.error = "Excel 生成失败"
             task.error_message = f"Excel 生成失败：{exc}"
@@ -187,7 +248,7 @@ class TaskService:
             task.logs.append(traceback.format_exc())
 
         task.updated_at = self._now()
-        return self.save_task(task)
+        self.save_task(task)
 
 
 task_service = TaskService()

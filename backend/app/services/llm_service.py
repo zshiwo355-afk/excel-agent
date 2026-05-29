@@ -1,10 +1,12 @@
 import json
+import re
 from typing import Any
 
 from openai import OpenAI
 
 from app.config import get_settings
 from app.schemas.task_plan import TaskPlan
+from app.utils.jsonable import to_jsonable
 
 
 SYSTEM_PROMPT = """你是 ExcelPlan 生成器。
@@ -16,10 +18,11 @@ SYSTEM_PROMPT = """你是 ExcelPlan 生成器。
 3. 多文件合并时，必须输出 action=merge_workbooks。
 4. 第一版合并只支持 merge.mode=append_rows。
 5. 按字段拆分成多个 sheet 时，必须输出 operation=split_sheet_by_column。
-6. notes 只能写解释，不能承载可执行逻辑。
-7. source_sheets 必须从 workbook_contexts 中选择，header_row 和 data_start_row 必须使用 profiler 识别结果。
-8. 如果字段无法完全对齐，优先保留字段并集，不要失败。
-9. 如果用户说一个公司一个表、按公司拆分、按门店拆分、按部门拆分、每个 xxx 一个 sheet，必须生成合法的 action/workbook_name/sheets。
+6. 如果用户上传两个文件，且明确要求“按表B/模板/样式/格式整理表A”，优先输出 operation=apply_template_sheet。
+7. notes 只能写解释，不能承载可执行逻辑。
+8. source_sheets 必须从 workbook_contexts 中选择，header_row 和 data_start_row 必须使用 profiler 识别结果。
+9. 如果字段无法完全对齐，优先保留字段并集，不要失败。
+10. 如果用户说一个公司一个表、按公司拆分、按门店拆分、按部门拆分、每个 xxx 一个 sheet，必须生成合法的 action/workbook_name/sheets。
 """
 
 MERGE_KEYWORDS = ["合并", "汇总到一个表", "追加", "整合", "做成总表", "总表"]
@@ -30,6 +33,10 @@ HEADER_ALIASES = {
     "产品": ["产品", "商品", "商品名称"],
     "金额": ["金额", "销售额", "价格"],
     "日期": ["日期", "销售日期"],
+}
+SORT_COLUMN_ALIASES = {
+    "价格": ["价格", "单价", "金额", "销售额", "金价", "报价", "价格(元)", "价格（元）"],
+    "日期": ["日期", "销售日期", "时间", "下单日期", "成交日期"],
 }
 SPLIT_COLUMN_ALIASES = {
     "公司": ["公司", "公司名称", "企业", "企业名称", "客户公司", "单位", "药店", "门店"],
@@ -88,6 +95,8 @@ class LLMService:
                     "clean_sheet",
                     "format_and_sort_sheet",
                     "split_sheet_by_column",
+                    "apply_template_sheet",
+                    "update_date_month",
                 ],
                 "supported_merge_modes": ["append_rows"],
                 "supported_split_modes": ["sheet_per_value"],
@@ -100,6 +109,7 @@ class LLMService:
                 "sheet_name_max_length": 31,
             },
         }
+        safe_user_payload = to_jsonable(user_payload)
 
         try:
             response = client.chat.completions.create(
@@ -107,7 +117,7 @@ class LLMService:
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                    {"role": "user", "content": json.dumps(safe_user_payload, ensure_ascii=False)},
                 ],
                 temperature=0.1,
             )
@@ -117,15 +127,8 @@ class LLMService:
             raw_json = json.loads(content)
             normalized = self.normalize_excel_plan(raw_json, message, workbook_context, workbook_contexts)
             return normalized, raw_json
-        except Exception:
-            raw = self._mock_excel_plan(
-                message,
-                workbook_context,
-                workbook_contexts,
-                uploaded_file_path,
-                uploaded_file_paths,
-            )
-            return self.normalize_excel_plan(raw, message, workbook_context, workbook_contexts), raw
+        except Exception as exc:
+            raise RuntimeError(f"Planner model call failed: {exc}") from exc
 
     def normalize_excel_plan(
         self,
@@ -135,6 +138,14 @@ class LLMService:
         workbook_contexts: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
         normalized_raw = self._coerce_legacy_excel_plan(raw_json)
+
+        if self._is_template_apply_request(user_input, workbook_contexts):
+            template_plan = self._build_template_apply_plan(user_input, workbook_contexts or [], normalized_raw)
+            if template_plan:
+                return template_plan
+
+        if date_update_plan := self._build_date_update_plan(user_input, workbook_context, normalized_raw):
+            return date_update_plan
 
         if self._is_split_request(user_input, workbook_context):
             if normalized_raw.get("action") and normalized_raw.get("workbook_name") and normalized_raw.get("sheets"):
@@ -156,6 +167,12 @@ class LLMService:
             normalized_raw["merge"] = normalized_raw.get("merge") or self._build_merge_plan(workbook_contexts or [])
             normalized_raw["style"] = normalized_raw.get("style") or self._default_style()
             return normalized_raw
+
+        if normalized_raw.get("action") == "modify_workbook" and normalized_raw.get("workbook_name"):
+            return self._normalize_modify(normalized_raw, user_input, workbook_context)
+
+        if normalized_raw.get("action") == "create_workbook" and normalized_raw.get("workbook_name"):
+            return self._normalize_create(normalized_raw, user_input)
 
         if normalized_raw.get("action") and normalized_raw.get("workbook_name"):
             return normalized_raw
@@ -221,6 +238,27 @@ class LLMService:
                 sheet["split"] = split
             if not sheet.get("name"):
                 sheet["name"] = "按字段拆分" if sheet.get("split") else (sheet.get("source_sheet") or "按字段拆分")
+        elif sheet.get("operation") == "apply_template_sheet":
+            template = dict(sheet.get("template") or {})
+            if "template_file_id" in sheet and not template.get("template_file_id"):
+                template["template_file_id"] = sheet.get("template_file_id")
+            if "template_sheet" in sheet and not template.get("template_sheet"):
+                template["template_sheet"] = sheet.get("template_sheet")
+            if "source_file_id" in sheet and not template.get("source_file_id"):
+                template["source_file_id"] = sheet.get("source_file_id")
+            if "source_sheet" in sheet and not template.get("source_sheet"):
+                template["source_sheet"] = sheet.get("source_sheet")
+            if "output_sheet_name" in sheet and not template.get("output_sheet_name"):
+                template["output_sheet_name"] = sheet.get("output_sheet_name")
+            template.setdefault("preserve_template_styles", True)
+            template.setdefault("preserve_column_widths", True)
+            template.setdefault("preserve_row_heights", True)
+            template.setdefault("preserve_merged_cells", True)
+            template.setdefault("clear_existing_data_rows", True)
+            if template:
+                sheet["template"] = template
+            if not sheet.get("name"):
+                sheet["name"] = template.get("output_sheet_name") or template.get("template_sheet") or "模板整理结果"
         elif not sheet.get("name"):
             sheet["name"] = sheet.get("source_sheet") or "Sheet1"
         return sheet
@@ -233,8 +271,33 @@ class LLMService:
             "header_bold": True,
         }
 
+    def _is_date_update_request(self, message: str) -> bool:
+        return "日期" in message and any(keyword in message for keyword in ["修改为", "改为", "改成", "变成"])
+
+    def _extract_target_month(self, message: str) -> int | None:
+        match = re.search(r"([1-9]|1[0-2])月", message)
+        if not match:
+            return None
+        return int(match.group(1))
+
     def _is_merge_request(self, message: str, workbook_contexts: list[dict[str, Any]] | None) -> bool:
         return len(workbook_contexts or []) >= 2 and any(keyword in message for keyword in MERGE_KEYWORDS)
+
+    def _is_template_apply_request(
+        self,
+        message: str,
+        workbook_contexts: list[dict[str, Any]] | None,
+    ) -> bool:
+        if len(workbook_contexts or []) < 2:
+            return False
+        template_keywords = ["模板", "格式", "样式", "版式", "排版"]
+        reference_keywords = ["按表", "按照表", "参考表", "套用", "用表", "基于表"]
+        data_keywords = ["数据", "内容", "排序", "整理"]
+        return (
+            any(keyword in message for keyword in template_keywords)
+            and any(keyword in message for keyword in reference_keywords)
+            and any(keyword in message for keyword in data_keywords)
+        )
 
     def _is_split_request(self, message: str, workbook_context: dict[str, Any] | None) -> bool:
         if not workbook_context:
@@ -339,6 +402,139 @@ class LLMService:
             "source_columns": ["来源文件", "来源Sheet"],
         }
 
+    def _build_template_apply_plan(
+        self,
+        user_input: str,
+        workbook_contexts: list[dict[str, Any]],
+        raw_json: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if len(workbook_contexts) < 2:
+            return None
+
+        source_workbook = workbook_contexts[0]
+        template_workbook = workbook_contexts[1]
+        source_sheet = self._pick_source_sheet(source_workbook)
+        template_sheet = self._pick_source_sheet(template_workbook)
+        if not source_sheet or not template_sheet:
+            return None
+
+        source_sheet_context = self._pick_sheet_context(source_workbook, source_sheet)
+        template_sheet_context = self._pick_sheet_context(template_workbook, template_sheet)
+        source_headers = source_sheet_context.get("headers", [])
+        template_headers = template_sheet_context.get("headers", [])
+        mapping = self._build_template_column_mapping(template_headers, source_headers)
+        sort_column = self._detect_sort_column(user_input, source_workbook, source_sheet)
+        output_sheet_name = template_sheet
+
+        return {
+            "action": "modify_workbook",
+            "workbook_name": (raw_json or {}).get("workbook_name") or f"按模板整理_{source_workbook.get('file_name', '结果')}",
+            "sheets": [
+                {
+                    "operation": "apply_template_sheet",
+                    "name": output_sheet_name,
+                    "source_sheet": source_sheet,
+                    "header_row": source_sheet_context.get("header_row", 1),
+                    "data_start_row": source_sheet_context.get("data_start_row", 2),
+                    "sort": (
+                        {
+                            "column": sort_column,
+                            "order": "desc" if "desc" in user_input or "降序" in user_input or "从高到低" in user_input else "asc",
+                            "numeric": True,
+                        }
+                        if sort_column
+                        else None
+                    ),
+                    "template": {
+                        "template_file_id": template_workbook.get("file_id") or "file_2",
+                        "template_sheet": template_sheet,
+                        "source_file_id": source_workbook.get("file_id") or "file_1",
+                        "source_sheet": source_sheet,
+                        "output_sheet_name": output_sheet_name,
+                        "column_mapping": mapping,
+                        "preserve_template_styles": True,
+                        "preserve_column_widths": True,
+                        "preserve_row_heights": True,
+                        "preserve_merged_cells": True,
+                        "clear_existing_data_rows": True,
+                        "data_start_row": template_sheet_context.get("data_start_row", 2),
+                    },
+                    "style": None,
+                }
+            ],
+            "notes": (raw_json or {}).get("notes", []),
+        }
+
+    def _build_template_column_mapping(
+        self,
+        template_headers: list[str],
+        source_headers: list[str],
+    ) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        normalized_source = {str(header).strip(): str(header).strip() for header in source_headers if header}
+        for template_header in template_headers:
+            target = str(template_header).strip()
+            if not target:
+                continue
+            if target in normalized_source:
+                mapping[target] = target
+                continue
+            for canonical, aliases in HEADER_ALIASES.items():
+                if target == canonical or target in aliases:
+                    for alias in aliases:
+                        if alias in normalized_source:
+                            mapping[target] = alias
+                            break
+                if target in mapping:
+                    break
+            if target in mapping:
+                continue
+            for source_header in source_headers:
+                candidate = str(source_header).strip()
+                if candidate and (target in candidate or candidate in target):
+                    mapping[target] = candidate
+                    break
+        return mapping
+
+    def _build_date_update_plan(
+        self,
+        user_input: str,
+        workbook_context: dict[str, Any] | None,
+        raw_json: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if not workbook_context or not self._is_date_update_request(user_input):
+            return None
+        source_sheet = self._pick_source_sheet(workbook_context)
+        if not source_sheet:
+            return None
+        target_month = self._extract_target_month(user_input)
+        if target_month is None:
+            return None
+        sheet_context = self._pick_sheet_context(workbook_context, source_sheet)
+        headers = sheet_context.get("headers", [])
+        date_headers = [header for header in headers if header and "日期" in header]
+        return {
+            "action": "modify_workbook",
+            "workbook_name": (raw_json or {}).get("workbook_name") or f"日期修改结果_{source_sheet}.xlsx",
+            "sheets": [
+                {
+                    "operation": "update_date_month",
+                    "name": source_sheet,
+                    "source_sheet": source_sheet,
+                    "header_row": sheet_context.get("header_row", 1),
+                    "data_start_row": sheet_context.get("data_start_row", 2),
+                    "date_update": {
+                        "target_month": target_month,
+                        "target_columns": date_headers,
+                        "match_mode": "date_column",
+                        "preserve_year": True,
+                        "preserve_day": True,
+                    },
+                }
+            ],
+            "notes": (raw_json or {}).get("notes", []),
+        }
+
     def _build_column_mapping(
         self,
         workbook_contexts: list[dict[str, Any]],
@@ -379,6 +575,7 @@ class LLMService:
     ) -> dict[str, Any]:
         normalized_payload = self._coerce_legacy_excel_plan(payload)
         sheets = normalized_payload.get("sheets") or self._build_fallback_modify_sheets(user_input, workbook_context)
+        sheets = [self._ensure_sort_plan(sheet, user_input, workbook_context) for sheet in sheets]
         return {
             "action": "modify_workbook",
             "workbook_name": normalized_payload.get("workbook_name") or "处理结果.xlsx",
@@ -404,6 +601,9 @@ class LLMService:
         if self._is_split_request(user_input, workbook_context):
             return self._build_split_plan(user_input, workbook_context)["sheets"]
 
+        if date_update_plan := self._build_date_update_plan(user_input, workbook_context):
+            return date_update_plan["sheets"]
+
         source_sheet = self._pick_source_sheet(workbook_context)
         if not source_sheet:
             return []
@@ -416,7 +616,7 @@ class LLMService:
         if sort_column:
             return [
                 {
-                    "operation": "format_and_sort_sheet",
+                    "operation": "sort_rows",
                     "name": source_sheet,
                     "source_sheet": source_sheet,
                     "header_row": header_row,
@@ -427,10 +627,9 @@ class LLMService:
                     "metrics": [],
                     "sort": {
                         "column": sort_column,
-                        "order": "desc" if "desc" in user_input or "降序" in user_input else "asc",
+                        "order": self._detect_sort_order(user_input),
                         "numeric": True,
                     },
-                    "style": self._default_style(),
                 }
             ]
 
@@ -499,11 +698,46 @@ class LLMService:
         for header in headers:
             if header and header in user_input:
                 return header
-        if "价格" in user_input:
-            for header in headers:
-                if "价格" in header or "金额" in header:
-                    return header
+        for canonical, aliases in SORT_COLUMN_ALIASES.items():
+            if canonical in user_input or any(alias in user_input for alias in aliases):
+                for alias in aliases:
+                    for header in headers:
+                        if header == alias or alias in header:
+                            return header
+        for header in headers:
+            if header and any(token in header for token in ["价格", "金额"]) and any(token in user_input for token in ["价格", "金额", "销售额", "金价"]):
+                return header
+        for header in headers:
+            if header and "日期" in header and any(token in user_input for token in ["日期", "时间"]):
+                return header
         return None
+
+    def _detect_sort_order(self, user_input: str) -> str:
+        if any(keyword in user_input for keyword in ["从高到低", "降序", "desc"]):
+            return "desc"
+        return "asc"
+
+    def _is_sort_request(self, user_input: str) -> bool:
+        return any(keyword in user_input for keyword in ["排序", "从高到低", "从低到高", "升序", "降序"])
+
+    def _ensure_sort_plan(
+        self,
+        sheet: dict[str, Any],
+        user_input: str,
+        workbook_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        normalized_sheet = dict(sheet)
+        if normalized_sheet.get("operation") not in {"sort_rows", "format_and_sort_sheet", "apply_template_sheet"}:
+            return normalized_sheet
+        if not self._is_sort_request(user_input):
+            return normalized_sheet
+        sort = dict(normalized_sheet.get("sort") or {})
+        source_sheet = normalized_sheet.get("source_sheet") or normalized_sheet.get("name") or self._pick_source_sheet(workbook_context)
+        sort.setdefault("column", self._detect_sort_column(user_input, workbook_context, source_sheet or ""))
+        sort.setdefault("order", self._detect_sort_order(user_input))
+        sort.setdefault("numeric", True)
+        normalized_sheet["sort"] = sort
+        return normalized_sheet
 
     def _mock_excel_plan(
         self,
@@ -514,6 +748,13 @@ class LLMService:
         uploaded_file_paths: list[str] | None,
     ) -> dict[str, Any]:
         contexts = workbook_contexts or ([workbook_context] if workbook_context else [])
+        if self._is_template_apply_request(message, contexts):
+            template_plan = self._build_template_apply_plan(message, contexts)
+            if template_plan:
+                return template_plan
+        if date_update_plan := self._build_date_update_plan(message, workbook_context):
+            date_update_plan["notes"] = ["mock llm enabled"]
+            return date_update_plan
         if self._is_split_request(message, workbook_context):
             return self._build_split_plan(message, workbook_context)
         if self._is_merge_request(message, contexts):
@@ -570,13 +811,14 @@ class LLMService:
                 ],
             },
         }
+        safe_prompt = to_jsonable(prompt)
         try:
             response = client.chat.completions.create(
                 model=self.settings.deepseek_model,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": "你是 TaskPlan 生成器，只返回 JSON，必须拆成多个 StepPlan。"},
-                    {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                    {"role": "user", "content": json.dumps(safe_prompt, ensure_ascii=False)},
                 ],
                 temperature=0.1,
             )

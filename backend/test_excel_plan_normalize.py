@@ -54,6 +54,97 @@ def run_normalize_test() -> None:
     ExcelPlan.model_validate(normalized)
 
 
+def run_template_normalize_test() -> None:
+    workbook_contexts = [
+        {
+            "file_id": "file_1",
+            "file_name": "data.xlsx",
+            "sheet_names": ["数据表"],
+            "sheets": [
+                {
+                    "name": "数据表",
+                    "header_row": 1,
+                    "data_start_row": 2,
+                    "headers": ["商品", "价格", "地区"],
+                }
+            ],
+        },
+        {
+            "file_id": "file_2",
+            "file_name": "template.xlsx",
+            "sheet_names": ["模板表"],
+            "sheets": [
+                {
+                    "name": "模板表",
+                    "header_row": 1,
+                    "data_start_row": 2,
+                    "headers": ["地区", "商品", "价格"],
+                }
+            ],
+        },
+    ]
+
+    normalized = llm_service.normalize_excel_plan(
+        {},
+        "把表A里面的数据按照表B里面的格式进行排序，价格从高到低",
+        workbook_contexts[0],
+        workbook_contexts,
+    )
+
+    assert normalized["action"] == "modify_workbook"
+    assert normalized["sheets"][0]["operation"] == "apply_template_sheet"
+    assert normalized["sheets"][0]["template"]["template_file_id"] == "file_2"
+    assert normalized["sheets"][0]["template"]["source_file_id"] == "file_1"
+    assert normalized["sheets"][0]["template"]["column_mapping"]["地区"] == "地区"
+    assert normalized["sheets"][0]["sort"]["column"] == "价格"
+    assert normalized["sheets"][0]["sort"]["order"] == "desc"
+    ExcelPlan.model_validate(normalized)
+
+
+def run_sort_normalize_test() -> None:
+    workbook_context = {
+        "sheet_names": ["Sheet1"],
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "header_row": 1,
+                "data_start_row": 2,
+                "headers": ["日期", "黄金价格", "品牌"],
+            }
+        ],
+    }
+
+    normalized_desc = llm_service.normalize_excel_plan(
+        {
+            "action": "modify_workbook",
+            "workbook_name": "排序结果.xlsx",
+            "sheets": [{"operation": "sort_rows", "name": "Sheet1", "source_sheet": "Sheet1"}],
+        },
+        "帮我把价格从高到低进行排序",
+        workbook_context,
+        [workbook_context],
+    )
+    assert normalized_desc["sheets"][0]["sort"]["column"] == "黄金价格"
+    assert normalized_desc["sheets"][0]["sort"]["order"] == "desc"
+
+    normalized_asc = llm_service.normalize_excel_plan(
+        {
+            "action": "modify_workbook",
+            "workbook_name": "排序结果.xlsx",
+            "sheets": [{"operation": "sort_rows", "name": "Sheet1", "source_sheet": "Sheet1"}],
+        },
+        "帮我把价格从低到高进行排序",
+        workbook_context,
+        [workbook_context],
+    )
+    assert normalized_asc["sheets"][0]["sort"]["column"] == "黄金价格"
+    assert normalized_asc["sheets"][0]["sort"]["order"] == "asc"
+    ExcelPlan.model_validate(normalized_desc)
+    ExcelPlan.model_validate(normalized_asc)
+
+
 if __name__ == "__main__":
     run_normalize_test()
+    run_template_normalize_test()
+    run_sort_normalize_test()
     print("excel plan normalize test passed")

@@ -31,13 +31,13 @@
               </div>
             </AgentMessage>
 
-            <AgentMessage title="任务已接收" :status="activeTask.status" :time="formatTime(activeTask.updated_at)">
+            <AgentMessage title="任务已接收" :status="intakeStatus" :time="formatTime(activeTask.updated_at)">
               <p class="agent-copy">
                 已收到任务{{ uploadedFileNames.length ? `，共上传 ${uploadedFileNames.length} 个文件` : "。" }}
               </p>
             </AgentMessage>
 
-            <AgentMessage v-if="activeTask.workbook_contexts?.length" title="表格结构分析" :status="activeTask.status">
+            <AgentMessage v-if="activeTask.workbook_contexts?.length" title="表格结构分析" :status="analysisStatus">
               <div class="analysis-list">
                 <div>已分析工作簿：{{ activeTask.workbook_contexts.length }}</div>
                 <div v-for="context in activeTask.workbook_contexts" :key="context.file_id || context.file_name">
@@ -46,7 +46,7 @@
               </div>
             </AgentMessage>
 
-            <AgentMessage v-if="activeTask.excel_plan" title="Agent 计划" :status="activeTask.status">
+            <AgentMessage v-if="activeTask.excel_plan" title="Agent 计划" :status="planStatus">
               <PlanPanel
                 :task="activeTask"
                 :confirm-loading="confirming"
@@ -54,7 +54,7 @@
               />
             </AgentMessage>
 
-            <AgentMessage v-if="activeTask.task_plan" title="任务拆解" :status="activeTask.status">
+            <AgentMessage v-if="activeTask.task_plan" title="任务拆解" :status="taskPlanStatus">
               <TaskPlanPanel
                 :task="activeTask"
                 :confirm-loading="confirming"
@@ -96,7 +96,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import AgentMessage from "../components/AgentMessage.vue";
@@ -116,6 +116,7 @@ const uploadFiles = ref([]);
 const creating = ref(false);
 const confirming = ref(false);
 const draftRequest = ref(null);
+const pollingTimer = ref(null);
 
 const activeTask = computed(
   () => tasks.value.find((item) => item.task_id === activeTaskId.value) || null,
@@ -134,6 +135,10 @@ const uploadedFileNames = computed(() => {
 const downloadUrl = computed(() =>
   activeTaskId.value ? getDownloadUrl(activeTaskId.value) : "",
 );
+const intakeStatus = computed(() => activeTask.value ? "completed" : "");
+const analysisStatus = computed(() => activeTask.value?.workbook_contexts?.length ? "completed" : "");
+const planStatus = computed(() => activeTask.value?.excel_plan ? "completed" : "");
+const taskPlanStatus = computed(() => activeTask.value?.task_plan ? "completed" : "");
 const showDraftMessage = computed(() => creating.value && draftRequest.value);
 const nowLabel = computed(() => new Date().toLocaleString());
 const timelineVisible = computed(() => {
@@ -192,6 +197,22 @@ const refreshTask = async (taskId) => {
   activeTaskId.value = taskId;
 };
 
+const stopPolling = () => {
+  if (pollingTimer.value) {
+    clearInterval(pollingTimer.value);
+    pollingTimer.value = null;
+  }
+};
+
+const ensurePolling = () => {
+  stopPolling();
+  if (!activeTaskId.value) return;
+  if (!["planning", "running"].includes(activeTask.value?.status || "")) return;
+  pollingTimer.value = setInterval(() => {
+    refreshTask(activeTaskId.value).catch(() => {});
+  }, 500);
+};
+
 const handleCreateTask = async () => {
   const trimmed = message.value.trim();
   if (!trimmed) {
@@ -209,13 +230,26 @@ const handleCreateTask = async () => {
       file: uploadFiles.value[0] || null,
       files: uploadFiles.value,
     });
-    await fetchTasks();
     activeTaskId.value = task.task_id;
+    const index = tasks.value.findIndex((item) => item.task_id === task.task_id);
+    if (index >= 0) {
+      tasks.value[index] = task;
+    } else {
+      tasks.value.unshift(task);
+    }
+    ensurePolling();
     await refreshTask(task.task_id);
+    await fetchTasks();
     message.value = "";
     uploadFiles.value = [];
     draftRequest.value = null;
-    ElMessage.success(task.status === "failed" ? "任务创建失败" : "执行计划已生成");
+    if (task.status === "failed") {
+      ElMessage.error("任务创建失败");
+    } else if (task.status === "running") {
+      ElMessage.success("任务已开始执行");
+    } else {
+      ElMessage.success("执行计划已生成");
+    }
   } catch (error) {
     draftRequest.value = null;
     ElMessage.error(error.response?.data?.detail || "创建任务失败");
@@ -228,9 +262,18 @@ const handleConfirmTask = async () => {
   if (!activeTaskId.value) return;
   confirming.value = true;
   try {
-    await confirmTask(activeTaskId.value);
+    const index = tasks.value.findIndex((item) => item.task_id === activeTaskId.value);
+    if (index >= 0) {
+      tasks.value[index] = { ...tasks.value[index], status: "running" };
+    }
+    ensurePolling();
+    const task = await confirmTask(activeTaskId.value);
+    const refreshedIndex = tasks.value.findIndex((item) => item.task_id === activeTaskId.value);
+    if (refreshedIndex >= 0) {
+      tasks.value[refreshedIndex] = task;
+    }
     await refreshTask(activeTaskId.value);
-    ElMessage.success("Excel 已生成");
+    ElMessage.success("任务已开始执行");
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || "确认任务失败");
   } finally {
@@ -259,4 +302,12 @@ const formatTime = (value) => {
 };
 
 onMounted(fetchTasks);
+
+watch(activeTask, () => {
+  ensurePolling();
+}, { deep: true });
+
+onBeforeUnmount(() => {
+  stopPolling();
+});
 </script>

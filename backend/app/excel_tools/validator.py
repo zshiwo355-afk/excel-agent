@@ -180,6 +180,26 @@ def _validate_split_output(workbook, plan: ExcelPlan) -> dict[str, Any]:
     return {"ok": True, "message": "Split validation passed.", "expected_rows": source_row_count, "actual_rows": total_split_rows}
 
 
+def _validate_template_output(workbook, plan: ExcelPlan) -> dict[str, Any]:
+    template_plan = next((sheet for sheet in plan.sheets if sheet.operation == "apply_template_sheet"), None)
+    if template_plan is None or template_plan.template is None:
+        return {"ok": False, "message": "Template plan is missing."}
+    output_sheet_name = template_plan.template.output_sheet_name or template_plan.template.template_sheet
+    if output_sheet_name not in workbook.sheetnames:
+        return {"ok": False, "message": f"Template output sheet '{output_sheet_name}' not found."}
+
+    sheet = workbook[output_sheet_name]
+    headers = [sheet.cell(row=1, column=col_idx).value for col_idx in range(1, sheet.max_column + 1)]
+    expected_headers = list((template_plan.template.column_mapping or {}).keys())
+    if expected_headers:
+        actual_headers = [str(item).strip() for item in headers if item not in (None, "")]
+        if actual_headers[: len(expected_headers)] != expected_headers:
+            return {"ok": False, "message": "Template output headers do not match template column order."}
+    if sheet.max_row < (template_plan.template.data_start_row or 2):
+        return {"ok": False, "message": "Template output does not contain data rows."}
+    return {"ok": True, "message": "Template validation passed."}
+
+
 def validate_output_workbook(
     file_path: str | Path,
     plan: ExcelPlan | None = None,
@@ -202,6 +222,11 @@ def validate_output_workbook(
 
     if plan and any(sheet.operation == "split_sheet_by_column" for sheet in plan.sheets):
         return _validate_split_output(workbook, plan)
+
+    if plan and any(sheet.operation == "apply_template_sheet" for sheet in plan.sheets):
+        template_result = _validate_template_output(workbook, plan)
+        if not template_result["ok"]:
+            return template_result
 
     if plan:
         sort_result = _validate_sorting(workbook, plan)

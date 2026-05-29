@@ -32,6 +32,47 @@ class FormulaPlan(BaseModel):
     expression: str
 
 
+class DateUpdatePlan(BaseModel):
+    target_month: int
+    target_columns: list[str] = Field(default_factory=list)
+    match_mode: Literal["date_column", "date_cells"] = "date_column"
+    preserve_year: bool = True
+    preserve_day: bool = True
+
+    @model_validator(mode="after")
+    def validate_date_update(self):
+        if not 1 <= self.target_month <= 12:
+            raise ValueError("date_update.target_month must be between 1 and 12.")
+        return self
+
+
+class TemplateSheetPlan(BaseModel):
+    template_file_id: str
+    template_sheet: str
+    source_file_id: str | None = None
+    source_sheet: str | None = None
+    output_sheet_name: str | None = None
+    column_mapping: dict[str, str] = Field(default_factory=dict)
+    preserve_template_styles: bool = True
+    preserve_column_widths: bool = True
+    preserve_row_heights: bool = True
+    preserve_merged_cells: bool = True
+    clear_existing_data_rows: bool = True
+    data_start_row: int | None = None
+
+    @model_validator(mode="after")
+    def validate_template(self):
+        self.template_file_id = self.template_file_id.strip()
+        self.template_sheet = self.template_sheet.strip()
+        if not self.template_file_id:
+            raise ValueError("template.template_file_id cannot be empty.")
+        if not self.template_sheet:
+            raise ValueError("template.template_sheet cannot be empty.")
+        if self.output_sheet_name is not None:
+            self.output_sheet_name = self.output_sheet_name.strip() or None
+        return self
+
+
 class SplitPlan(BaseModel):
     column: str
     target_mode: Literal["sheet_per_value"] = "sheet_per_value"
@@ -89,6 +130,8 @@ class SheetPlan(BaseModel):
         "clean_sheet",
         "format_and_sort_sheet",
         "split_sheet_by_column",
+        "apply_template_sheet",
+        "update_date_month",
     ]
     name: str
     columns: list[str] | None = None
@@ -103,6 +146,8 @@ class SheetPlan(BaseModel):
     sort: SortPlan | None = None
     clean: CleanPlan | None = None
     split: SplitPlan | None = None
+    template: TemplateSheetPlan | None = None
+    date_update: DateUpdatePlan | None = None
     rows: list[dict[str, Any]] | None = None
     formulas: list[FormulaPlan] | None = None
 
@@ -119,6 +164,16 @@ class SheetPlan(BaseModel):
                 raise ValueError("split_sheet_by_column requires split.")
             if not self.source_sheet:
                 raise ValueError("split_sheet_by_column requires source_sheet.")
+        if self.operation == "apply_template_sheet":
+            if not self.template:
+                raise ValueError("apply_template_sheet requires template.")
+            if not self.source_sheet and not self.template.source_sheet:
+                raise ValueError("apply_template_sheet requires source_sheet.")
+        if self.operation == "update_date_month":
+            if not self.date_update:
+                raise ValueError("update_date_month requires date_update.")
+            if not self.source_sheet:
+                raise ValueError("update_date_month requires source_sheet.")
         return self
 
 

@@ -4,6 +4,7 @@ from typing import Any
 from openpyxl.cell.cell import Cell
 
 from app.excel_tools.reader import load_workbook_safe
+from app.utils.jsonable import to_jsonable
 
 
 def _cell_value(cell: Cell):
@@ -99,10 +100,12 @@ def profile_workbook(
             }
         )
 
-    return {
+    return to_jsonable(
+        {
         "file_id": file_id,
         "file_path": str(Path(file_path).resolve()),
         "file_name": file_name or Path(file_path).name,
         "sheet_names": workbook.sheetnames,
         "sheets": sheets,
-    }
+        }
+    )
