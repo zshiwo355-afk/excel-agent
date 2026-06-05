@@ -18,8 +18,6 @@ SPLIT_COLUMN_ALIASES = [
     "部门",
     "部门名称",
 ]
-
-
 def _build_sheet_index(workbook_contexts: list[dict]) -> set[tuple[str, str]]:
     pairs: set[tuple[str, str]] = set()
     for workbook in workbook_contexts:
@@ -145,6 +143,7 @@ def plan_validate_node(state: AgentState) -> AgentState:
         return state
     if not state.excel_plan:
         state.status = "failed"
+        state.status_message = "思考失败"
         state.error = "ExcelPlan 校验失败"
         state.error_message = "Planner 未返回可执行的 ExcelPlan。"
         state.technical_error = "Planner returned empty excel_plan."
@@ -167,31 +166,37 @@ def plan_validate_node(state: AgentState) -> AgentState:
         elif plan.action == "merge_workbooks":
             _validate_merge_plan(state, plan)
 
-        seen_names: set[str] = set()
-        for sheet in plan.sheets:
-            lowered = sheet.name.lower()
-            if lowered in seen_names:
-                raise ValueError(f"Duplicate sheet name detected: {sheet.name}")
-            seen_names.add(lowered)
+        if plan.action != "modify_workbook":
+            seen_names: set[str] = set()
+            for sheet in plan.sheets:
+                lowered = sheet.name.lower()
+                if lowered in seen_names:
+                    raise ValueError(f"Duplicate sheet name detected: {sheet.name}")
+                seen_names.add(lowered)
 
         state.excel_plan = plan.model_dump(mode="json")
         state.logs.append("ExcelPlan validation passed.")
         state.status = "waiting_confirm"
+        state.status_message = "思考完成"
     except ValidationError as exc:
         missing_fields = [
             str(item["loc"][0])
             for item in exc.errors()
             if item.get("type") == "missing" and item.get("loc")
         ]
+        error_message = summarize_excel_plan_validation_error(missing_fields)
         state.status = "failed"
+        state.status_message = "思考失败"
         state.error = "ExcelPlan 校验失败"
-        state.error_message = summarize_excel_plan_validation_error(missing_fields)
+        state.error_message = error_message
         state.technical_error = str(exc)
         state.logs.append(f"ExcelPlan validation failed: {state.error_message}")
     except Exception as exc:
+        error_message = str(exc)
         state.status = "failed"
+        state.status_message = "思考失败"
         state.error = "ExcelPlan 校验失败"
-        state.error_message = str(exc)
+        state.error_message = error_message
         state.technical_error = repr(exc)
         state.logs.append(f"ExcelPlan validation failed: {exc}")
     return state

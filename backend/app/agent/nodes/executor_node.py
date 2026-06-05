@@ -186,6 +186,18 @@ def _execute_simple_plan_with_steps(state: AgentState, plan: ExcelPlan, output_p
                 result_summary=f"已将日期月份修改为 {target_month} 月",
             )
 
+        if sheet_plan.operation == "fill_column_with_value":
+            column_name = sheet_plan.fill.column_name if sheet_plan.fill else "目标列"
+            label = "填充今天日期" if sheet_plan.fill and sheet_plan.fill.value_mode == "today_date" else f"填充列 {column_name}"
+            _run_simple_step(
+                state,
+                title=label,
+                detail=base_detail,
+                action=lambda sp=sheet_plan: execute_simple_sheet_operation(workbook, sp),
+                tool_name="fill_column_with_value",
+                result_summary=f"已写入列：{column_name}",
+            )
+
         if sheet_plan.operation == "format_and_sort_sheet":
             _run_simple_step(
                 state,
@@ -297,6 +309,10 @@ def executor_node(state: AgentState) -> AgentState:
                 if sheet_plan.sort:
                     state.logs.append(
                         f"Sorting sheet {target_name} by column {sheet_plan.sort.column} {sheet_plan.sort.order}"
+                    )
+                if sheet_plan.operation == "fill_column_with_value" and sheet_plan.fill:
+                    state.logs.append(
+                        f"Filling column {sheet_plan.fill.column_name} on sheet {target_name} with {sheet_plan.fill.value_mode}"
                     )
             _execute_simple_plan_with_steps(state, plan, output_path)
 

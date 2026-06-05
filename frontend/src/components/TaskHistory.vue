@@ -1,66 +1,110 @@
 <template>
   <aside class="history-shell">
     <div class="history-top">
-      <div>
+      <div class="history-brand-block">
         <div class="history-brand">Excel Agent Studio</div>
-        <div class="history-sub">本地表格 Agent</div>
+        <div class="history-sub">面向表格处理的本地工作台</div>
       </div>
-      <el-button type="primary" plain @click="$emit('new-task')">新建任务</el-button>
+      <el-button class="history-button" type="primary" @click="$emit('new-task')">
+        <el-icon><Plus /></el-icon>
+        <span>新任务</span>
+      </el-button>
+    </div>
+
+    <div class="history-metrics">
+      <div class="history-metric">
+        <span class="metric-label">总任务</span>
+        <strong class="metric-value">{{ tasks.length }}</strong>
+      </div>
+      <div class="history-metric">
+        <span class="metric-label">已完成</span>
+        <strong class="metric-value">{{ completedCount }}</strong>
+      </div>
+      <div class="history-metric">
+        <span class="metric-label">进行中</span>
+        <strong class="metric-value">{{ runningCount }}</strong>
+      </div>
     </div>
 
     <div class="history-actions">
-      <el-button text @click="$emit('refresh')">刷新</el-button>
+      <el-button class="history-refresh" text @click="$emit('refresh')">
+        <el-icon><RefreshRight /></el-icon>
+        <span>刷新列表</span>
+      </el-button>
     </div>
 
-    <el-scrollbar height="calc(100vh - 180px)">
+    <el-scrollbar class="history-scroll">
       <div class="history-list">
       <div
         v-for="group in groupedTasks"
         :key="group.key"
         class="history-group"
       >
-        <button
-          type="button"
-          class="history-entry group-entry"
-          :class="{ selected: group.tasks.some((item) => item.task_id === activeTaskId) }"
-          @click="selectGroup(group)"
-        >
-          <div class="entry-head">
-            <span class="status-pill" :class="statusClass(group.latest.status)">
-              {{ statusLabel(group.latest.status) }}
-            </span>
-            <span class="entry-time">{{ formatTime(group.latest.updated_at) }}</span>
-          </div>
-
-          <div class="entry-title">{{ group.title }}</div>
-
-          <div v-if="group.fileName" class="entry-file">
-            {{ group.fileName }}
-          </div>
-
-          <div v-if="group.tasks.length > 1" class="entry-summary">
-            共 {{ group.tasks.length }} 条相关记录
-          </div>
-        </button>
-
-        <div v-if="isExpanded(group)" class="subtask-list">
+        <div class="history-entry-shell">
           <button
-            v-for="item in group.tasks"
-            :key="item.task_id"
             type="button"
-            class="subtask-entry"
-            :class="{ active: item.task_id === activeTaskId }"
-            @click="$emit('select', item.task_id)"
+            class="history-entry group-entry"
+            :class="{ selected: group.tasks.some((item) => item.task_id === activeTaskId) }"
+            @click="selectGroup(group)"
           >
-            <span class="subtask-dot" :class="statusClass(item.status)"></span>
-            <div class="subtask-body">
-              <div class="subtask-title">{{ subtaskTitle(item, group) }}</div>
-              <div class="subtask-meta">
-                <span class="subtask-status">{{ statusLabel(item.status) }}</span>
-                <span>{{ formatTime(item.updated_at) }}</span>
-              </div>
+            <div class="entry-head">
+              <span class="status-pill" :class="statusClass(group.latest.status)">
+                {{ statusLabel(group.latest.status) }}
+              </span>
+              <span class="entry-time">{{ formatTime(group.latest.updated_at) }}</span>
+            </div>
+
+            <div class="entry-title">{{ group.title }}</div>
+
+            <div v-if="group.fileName" class="entry-file">
+              {{ group.fileName }}
+            </div>
+
+            <div v-if="group.tasks.length > 1" class="entry-summary">
+              共 {{ group.tasks.length }} 条相关记录
             </div>
           </button>
+
+          <button
+            type="button"
+            class="entry-delete"
+            :aria-label="`删除${group.title}`"
+            @click.stop="$emit('delete', group.tasks.map((item) => item.task_id))"
+          >
+            <el-icon><Delete /></el-icon>
+          </button>
+        </div>
+
+        <div v-if="isExpanded(group)" class="subtask-list">
+          <div
+            v-for="item in group.tasks"
+            :key="item.task_id"
+            class="subtask-row"
+          >
+            <button
+              type="button"
+              class="subtask-entry"
+              :class="{ active: item.task_id === activeTaskId }"
+              @click="$emit('select', item.task_id)"
+            >
+              <span class="subtask-dot" :class="statusClass(item.status)"></span>
+              <div class="subtask-body">
+                <div class="subtask-title">{{ subtaskTitle(item, group) }}</div>
+                <div class="subtask-meta">
+                  <span class="subtask-status">{{ statusLabel(item.status) }}</span>
+                  <span>{{ formatTime(item.updated_at) }}</span>
+                </div>
+              </div>
+            </button>
+            <button
+              type="button"
+              class="subtask-delete"
+              :aria-label="`删除${subtaskTitle(item, group)}`"
+              @click.stop="$emit('delete', item.task_id)"
+            >
+              <el-icon><Delete /></el-icon>
+            </button>
+          </div>
         </div>
       </div>
       </div>
@@ -71,6 +115,7 @@
 
 <script setup>
 import { computed, ref, watch } from "vue";
+import { Delete, Plus, RefreshRight } from "@element-plus/icons-vue";
 
 const props = defineProps({
   tasks: {
@@ -83,9 +128,13 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["select", "refresh", "new-task"]);
+const emit = defineEmits(["select", "delete", "refresh", "new-task"]);
 
 const expandedKeys = ref(new Set());
+const completedCount = computed(() => props.tasks.filter((item) => item.status === "completed").length);
+const runningCount = computed(() =>
+  props.tasks.filter((item) => ["planning", "running", "waiting_confirm", "waiting_step_confirm"].includes(item.status)).length,
+);
 
 watch(
   () => props.activeTaskId,
@@ -103,13 +152,14 @@ watch(
 const statusClass = (status) => {
   if (status === "completed") return "is-success";
   if (status === "failed") return "is-failed";
-  if (status === "waiting_confirm" || status === "waiting_step_confirm") return "is-pending";
+  if (status === "needs_input" || status === "waiting_confirm" || status === "waiting_step_confirm") return "is-pending";
   return "is-neutral";
 };
 
 const statusLabel = (status) => {
   if (status === "completed") return "已完成";
   if (status === "failed") return "失败";
+  if (status === "needs_input") return "待补充";
   if (status === "waiting_confirm") return "待确认";
   if (status === "waiting_step_confirm") return "待步骤确认";
   if (status === "running") return "执行中";
@@ -211,10 +261,62 @@ const subtaskTitle = (task, group) => {
 </script>
 
 <style scoped>
+.history-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+}
+
+.history-brand-block {
+  min-width: 0;
+}
+
+.history-button {
+  border-radius: 999px;
+}
+
+.history-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.history-metric {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.22);
+}
+
+.metric-label {
+  color: rgba(226, 232, 240, 0.72);
+  font-size: 11px;
+}
+
+.metric-value {
+  color: #f8fafc;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.history-refresh {
+  padding-left: 0;
+}
+
 .history-list {
   display: grid;
   gap: 14px;
   padding-right: 4px;
+}
+
+.history-scroll {
+  flex: 1;
+  min-height: 0;
 }
 
 .history-group {
@@ -222,13 +324,17 @@ const subtaskTitle = (task, group) => {
   gap: 10px;
 }
 
+.history-entry-shell {
+  position: relative;
+}
+
 .history-entry {
   width: 100%;
-  padding: 14px 14px 13px;
-  border: 1px solid #d9e2ec;
+  padding: 14px 50px 13px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 18px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+  background: linear-gradient(180deg, rgba(21, 30, 45, 0.92) 0%, rgba(12, 20, 32, 0.92) 100%);
+  box-shadow: 0 18px 36px rgba(2, 6, 23, 0.28);
   text-align: left;
   cursor: pointer;
   transition:
@@ -238,14 +344,45 @@ const subtaskTitle = (task, group) => {
 }
 
 .history-entry:hover {
-  border-color: #bfd0e3;
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+  border-color: rgba(94, 234, 212, 0.36);
+  box-shadow: 0 22px 42px rgba(15, 23, 42, 0.34);
   transform: translateY(-1px);
 }
 
 .history-entry.selected {
-  border-color: #7aa2d6;
-  box-shadow: 0 16px 30px rgba(64, 112, 173, 0.14);
+  border-color: rgba(94, 234, 212, 0.58);
+  box-shadow: 0 24px 44px rgba(15, 23, 42, 0.42);
+}
+
+.entry-delete,
+.subtask-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(248, 113, 113, 0.12);
+  color: rgba(253, 164, 175, 0.92);
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.entry-delete:hover,
+.subtask-delete:hover {
+  background: rgba(248, 113, 113, 0.2);
+  color: #fecdd3;
+  transform: translateY(-1px);
+}
+
+.entry-delete {
+  position: absolute;
+  top: 12px;
+  right: 12px;
 }
 
 .entry-head {
@@ -269,31 +406,31 @@ const subtaskTitle = (task, group) => {
 }
 
 .status-pill.is-success {
-  color: #2f7d32;
-  background: #eef9ef;
-  border-color: #b9e0bc;
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.16);
+  border-color: rgba(34, 197, 94, 0.22);
 }
 
 .status-pill.is-failed {
-  color: #c2410c;
-  background: #fff1eb;
-  border-color: #f7bea8;
+  color: #fda4af;
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.2);
 }
 
 .status-pill.is-pending {
-  color: #9a6700;
-  background: #fff7db;
-  border-color: #f3d98a;
+  color: #fde68a;
+  background: rgba(251, 191, 36, 0.16);
+  border-color: rgba(251, 191, 36, 0.22);
 }
 
 .status-pill.is-neutral {
-  color: #475569;
-  background: #f1f5f9;
-  border-color: #dbe4ee;
+  color: #bae6fd;
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.2);
 }
 
 .entry-time {
-  color: #7b8794;
+  color: rgba(203, 213, 225, 0.68);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -301,7 +438,7 @@ const subtaskTitle = (task, group) => {
 .entry-title {
   display: -webkit-box;
   overflow: hidden;
-  color: #16202a;
+  color: #f8fafc;
   font-size: 15px;
   font-weight: 600;
   line-height: 1.5;
@@ -311,7 +448,7 @@ const subtaskTitle = (task, group) => {
 
 .entry-file {
   margin-top: 10px;
-  color: #4b5563;
+  color: rgba(203, 213, 225, 0.76);
   font-size: 13px;
   line-height: 1.5;
   word-break: break-word;
@@ -319,7 +456,7 @@ const subtaskTitle = (task, group) => {
 
 .entry-summary {
   margin-top: 10px;
-  color: #7b8794;
+  color: rgba(148, 163, 184, 0.82);
   font-size: 12px;
 }
 
@@ -338,19 +475,30 @@ const subtaskTitle = (task, group) => {
   bottom: 4px;
   left: 0;
   width: 1px;
-  background: linear-gradient(180deg, #d7e2ee 0%, #e7edf4 100%);
+  background: linear-gradient(180deg, rgba(94, 234, 212, 0.2) 0%, rgba(148, 163, 184, 0.08) 100%);
+}
+
+.subtask-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .subtask-entry {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  width: 100%;
+  flex: 1;
   padding: 8px 0 8px 2px;
   border: 0;
   background: transparent;
   text-align: left;
   cursor: pointer;
+}
+
+.subtask-delete {
+  flex: 0 0 30px;
+  margin-top: 2px;
 }
 
 .subtask-dot {
@@ -359,7 +507,7 @@ const subtaskTitle = (task, group) => {
   margin-top: 6px;
   border-radius: 999px;
   background: #94a3b8;
-  box-shadow: 0 0 0 4px #f8fafc;
+  box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.88);
   flex: 0 0 9px;
 }
 
@@ -386,7 +534,7 @@ const subtaskTitle = (task, group) => {
 }
 
 .subtask-title {
-  color: #334155;
+  color: rgba(226, 232, 240, 0.9);
   font-size: 13px;
   line-height: 1.45;
   word-break: break-word;
@@ -396,21 +544,21 @@ const subtaskTitle = (task, group) => {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #8a94a6;
+  color: rgba(148, 163, 184, 0.82);
   font-size: 12px;
   flex-wrap: wrap;
 }
 
 .subtask-status {
-  color: #526071;
+  color: rgba(226, 232, 240, 0.7);
 }
 
 .subtask-entry.active .subtask-title {
-  color: #0f172a;
+  color: #ffffff;
   font-weight: 600;
 }
 
 .subtask-entry.active .subtask-meta {
-  color: #64748b;
+  color: rgba(226, 232, 240, 0.74);
 }
 </style>

@@ -4,13 +4,35 @@
       :tasks="tasks"
       :active-task-id="activeTaskId"
       @select="selectTask"
+      @delete="handleDeleteTask"
       @refresh="fetchTasks"
       @new-task="startNewTask"
     />
 
     <section class="conversation-panel">
-      <div class="conversation-scroll">
+      <div ref="conversationScrollRef" class="conversation-scroll">
         <div class="conversation-inner">
+          <section class="workspace-hero" :class="{ 'is-empty': !activeTask && !showDraftMessage }">
+            <div class="hero-copy">
+              <div class="hero-kicker">{{ heroKicker }}</div>
+              <h1 class="hero-title">{{ heroTitle }}</h1>
+              <p class="hero-description">{{ heroDescription }}</p>
+            </div>
+
+            <div class="hero-stats">
+              <div v-for="item in heroStats" :key="item.label" class="hero-stat">
+                <span class="hero-stat-label">{{ item.label }}</span>
+                <strong class="hero-stat-value">{{ item.value }}</strong>
+              </div>
+            </div>
+
+            <div v-if="heroChips.length" class="hero-chips">
+              <span v-for="chip in heroChips" :key="chip" class="hero-chip">
+                {{ chip }}
+              </span>
+            </div>
+          </section>
+
           <template v-if="showDraftMessage">
             <AgentMessage role="user" :time="nowLabel">
               <div class="user-copy">{{ draftRequest.message }}</div>
@@ -31,13 +53,26 @@
               </div>
             </AgentMessage>
 
-            <AgentMessage title="任务已接收" :status="intakeStatus" :time="formatTime(activeTask.updated_at)">
+            <AgentMessage
+              v-if="isThinkingPhase"
+              title="思考中"
+              status="planning"
+              :time="formatTime(activeTask.updated_at)"
+            >
+              <p class="agent-copy">{{ thinkingStatusText }}</p>
+            </AgentMessage>
+
+            <AgentMessage v-else title="任务已接收" :status="intakeStatus" :time="formatTime(activeTask.updated_at)">
               <p class="agent-copy">
                 已收到任务{{ uploadedFileNames.length ? `，共上传 ${uploadedFileNames.length} 个文件` : "。" }}
               </p>
             </AgentMessage>
 
-            <AgentMessage v-if="activeTask.workbook_contexts?.length" title="表格结构分析" :status="analysisStatus">
+            <AgentMessage
+              v-if="!isThinkingPhase && activeTask.workbook_contexts?.length"
+              title="表格结构分析"
+              :status="analysisStatus"
+            >
               <div class="analysis-list">
                 <div>已分析工作簿：{{ activeTask.workbook_contexts.length }}</div>
                 <div v-for="context in activeTask.workbook_contexts" :key="context.file_id || context.file_name">
@@ -46,7 +81,11 @@
               </div>
             </AgentMessage>
 
-            <AgentMessage v-if="activeTask.excel_plan" title="Agent 计划" :status="planStatus">
+            <AgentMessage
+              v-if="!isThinkingPhase && activeTask.excel_plan"
+              title="Agent 计划"
+              :status="planStatus"
+            >
               <PlanPanel
                 :task="activeTask"
                 :confirm-loading="confirming"
@@ -54,7 +93,11 @@
               />
             </AgentMessage>
 
-            <AgentMessage v-if="activeTask.task_plan" title="任务拆解" :status="taskPlanStatus">
+            <AgentMessage
+              v-if="!isThinkingPhase && activeTask.task_plan"
+              title="任务拆解"
+              :status="taskPlanStatus"
+            >
               <TaskPlanPanel
                 :task="activeTask"
                 :confirm-loading="confirming"
@@ -62,7 +105,11 @@
               />
             </AgentMessage>
 
-            <AgentMessage v-if="timelineVisible" title="执行进度" :status="activeTask.status">
+            <AgentMessage
+              v-if="!isThinkingPhase && timelineVisible"
+              title="执行进度"
+              :status="activeTask.status"
+            >
               <TaskTimeline :task="activeTask" />
               <DebugDetails :sections="debugSections" />
             </AgentMessage>
@@ -76,28 +123,46 @@
             </AgentMessage>
           </template>
 
-          <div v-else class="welcome-card">
-            <div class="welcome-title">开始一个新的 Excel 任务</div>
-            <p>在下方输入需求，上传一个或多个 `.xlsx`，让 Agent 修改、排序、格式化或合并成总表。</p>
-          </div>
+          <section v-else class="welcome-panel">
+            <div class="welcome-copy">
+              <div class="welcome-title">开始一个新的 Excel 任务</div>
+              <p>输入需求并上传 `.xlsx`，Agent 会先生成可确认的执行计划，再输出结果文件。</p>
+            </div>
+            <div class="welcome-grid">
+              <div class="welcome-item">
+                <strong>排序整理</strong>
+                <span>按字段排序、删除空行、统一表头格式</span>
+              </div>
+              <div class="welcome-item">
+                <strong>批量合并</strong>
+                <span>多工作簿映射字段后汇总为总表</span>
+              </div>
+              <div class="welcome-item">
+                <strong>结构拆分</strong>
+                <span>按列值拆分 sheet，生成独立结果</span>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
 
       <ChatPanel
         :message="message"
-        :file-names="uploadFileNames"
+        :files="uploadFiles"
         :loading="creating"
+        :placeholder="composerPlaceholder"
+        :submit-label="composerSubmitLabel"
         @update:message="message = $event"
         @file-change="handleFileChange"
-        @submit="handleCreateTask"
+        @submit="handlePrimarySubmit"
       />
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 import AgentMessage from "../components/AgentMessage.vue";
 import ChatPanel from "../components/ChatPanel.vue";
@@ -107,7 +172,7 @@ import ResultPanel from "../components/ResultPanel.vue";
 import TaskHistory from "../components/TaskHistory.vue";
 import TaskPlanPanel from "../components/TaskPlanPanel.vue";
 import TaskTimeline from "../components/TaskTimeline.vue";
-import { confirmTask, createTask, getDownloadUrl, getTask, listTasks } from "../api/taskApi";
+import { confirmTask, createTask, deleteTask, getDownloadUrl, getTask, listTasks } from "../api/taskApi";
 
 const tasks = ref([]);
 const activeTaskId = ref("");
@@ -117,6 +182,7 @@ const creating = ref(false);
 const confirming = ref(false);
 const draftRequest = ref(null);
 const pollingTimer = ref(null);
+const conversationScrollRef = ref(null);
 
 const activeTask = computed(
   () => tasks.value.find((item) => item.task_id === activeTaskId.value) || null,
@@ -141,9 +207,72 @@ const planStatus = computed(() => activeTask.value?.excel_plan ? "completed" : "
 const taskPlanStatus = computed(() => activeTask.value?.task_plan ? "completed" : "");
 const showDraftMessage = computed(() => creating.value && draftRequest.value);
 const nowLabel = computed(() => new Date().toLocaleString());
+const isThinkingPhase = computed(() => activeTask.value?.status === "planning");
+const thinkingStatusText = computed(() => activeTask.value?.status_message || "正在思考");
+const composerPlaceholder = computed(() => "描述你想让 Excel Agent 执行的任务，支持一次上传一个或多个 .xlsx 文件。");
+const composerSubmitLabel = computed(() => "发送");
 const timelineVisible = computed(() => {
   const logs = activeTask.value?.execution_logs || activeTask.value?.logs || [];
   return Boolean(logs.length || activeTask.value?.status);
+});
+const currentFileNames = computed(() => {
+  if (showDraftMessage.value) {
+    return draftRequest.value?.fileNames || [];
+  }
+  return uploadedFileNames.value;
+});
+const currentStatusLabel = computed(() => {
+  if (showDraftMessage.value) return "创建中";
+  return statusLabel(activeTask.value?.status);
+});
+const heroKicker = computed(() => {
+  if (showDraftMessage.value) return "Task Intake";
+  if (activeTask.value) return "Active Workbook Flow";
+  return "Excel Workflow Console";
+});
+const heroTitle = computed(() => {
+  if (showDraftMessage.value) return "正在创建新任务";
+  if (activeTask.value?.message) return activeTask.value.message;
+  return "把排序、清洗、合并交给 Agent";
+});
+const heroDescription = computed(() => {
+  if (showDraftMessage.value) {
+    return "请求已提交，正在创建任务并准备分析上传的工作簿。";
+  }
+  if (activeTask.value) {
+    const updatedAt = formatTime(activeTask.value.updated_at);
+    return `${currentStatusLabel.value}${updatedAt ? `，最近更新于 ${updatedAt}` : ""}。`;
+  }
+  return "侧栏保留历史记录，主线程只展示当前任务的上下文、计划、进度和结果。";
+});
+const heroStats = computed(() => {
+  if (showDraftMessage.value || activeTask.value) {
+    return [
+      { label: "当前状态", value: currentStatusLabel.value },
+      { label: "关联文件", value: currentFileNames.value.length || 0 },
+      {
+        label: "计划节点",
+        value: activeTask.value?.task_plan?.steps?.length
+          || activeTask.value?.excel_plan?.sheets?.length
+          || 0,
+      },
+    ];
+  }
+
+  return [
+    { label: "历史任务", value: tasks.value.length },
+    { label: "已完成", value: tasks.value.filter((item) => item.status === "completed").length },
+    {
+      label: "进行中",
+      value: tasks.value.filter((item) => ["planning", "running"].includes(item.status)).length,
+    },
+  ];
+});
+const heroChips = computed(() => {
+  if (currentFileNames.value.length) {
+    return currentFileNames.value.slice(0, 4);
+  }
+  return ["排序", "格式化", "合并总表", "按列拆分"];
 });
 
 const debugSections = computed(() => [
@@ -178,7 +307,9 @@ const debugSections = computed(() => [
 const fetchTasks = async () => {
   try {
     tasks.value = await listTasks();
-    if (!activeTaskId.value && tasks.value.length) {
+    if (activeTaskId.value && !tasks.value.some((item) => item.task_id === activeTaskId.value)) {
+      activeTaskId.value = tasks.value[0]?.task_id || "";
+    } else if (!activeTaskId.value && tasks.value.length) {
       activeTaskId.value = tasks.value[0].task_id;
     }
   } catch (error) {
@@ -213,6 +344,10 @@ const ensurePolling = () => {
   }, 500);
 };
 
+const handlePrimarySubmit = async () => {
+  await handleCreateTask();
+};
+
 const handleCreateTask = async () => {
   const trimmed = message.value.trim();
   if (!trimmed) {
@@ -245,10 +380,8 @@ const handleCreateTask = async () => {
     draftRequest.value = null;
     if (task.status === "failed") {
       ElMessage.error("任务创建失败");
-    } else if (task.status === "running") {
-      ElMessage.success("任务已开始执行");
     } else {
-      ElMessage.success("执行计划已生成");
+      ElMessage.success("任务已开始思考");
     }
   } catch (error) {
     draftRequest.value = null;
@@ -289,7 +422,49 @@ const selectTask = async (taskId) => {
   await refreshTask(taskId);
 };
 
+const handleDeleteTask = async (taskIds) => {
+  const ids = Array.isArray(taskIds) ? taskIds : [taskIds];
+  const deletingTasks = tasks.value.filter((item) => ids.includes(item.task_id));
+  if (!deletingTasks.length) return;
+  const isBatchDelete = deletingTasks.length > 1;
+
+  try {
+    await ElMessageBox.confirm(
+      isBatchDelete
+        ? `删除后会同时移除这 ${deletingTasks.length} 条历史记录及其上传文件、生成结果，且不可恢复。`
+        : "删除后会同时移除该任务的历史记录、上传文件和生成结果，且不可恢复。",
+      "删除历史任务",
+      {
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+        type: "warning",
+        confirmButtonClass: "el-button--danger",
+      },
+    );
+  } catch {
+    return;
+  }
+
+  try {
+    if (ids.includes(activeTaskId.value)) {
+      stopPolling();
+    }
+    await Promise.all(ids.map((id) => deleteTask(id)));
+    tasks.value = tasks.value.filter((item) => !ids.includes(item.task_id));
+    if (ids.includes(activeTaskId.value)) {
+      activeTaskId.value = tasks.value[0]?.task_id || "";
+    }
+    if (activeTaskId.value) {
+      await refreshTask(activeTaskId.value);
+    }
+    ElMessage.success(isBatchDelete ? "历史任务组已删除" : "历史任务已删除");
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || "删除任务失败");
+  }
+};
+
 const startNewTask = () => {
+  stopPolling();
   activeTaskId.value = "";
   message.value = "";
   uploadFiles.value = [];
@@ -301,11 +476,59 @@ const formatTime = (value) => {
   return new Date(value).toLocaleString();
 };
 
+const statusLabel = (status) => {
+  if (status === "completed") return "已完成";
+  if (status === "failed") return "失败";
+  if (status === "needs_input") return "待补充";
+  if (status === "waiting_confirm") return "待确认";
+  if (status === "waiting_step_confirm") return "待步骤确认";
+  if (status === "running") return "执行中";
+  if (status === "planning") return "规划中";
+  return "待开始";
+};
+
+const scrollConversationToBottom = (behavior = "smooth") => {
+  const container = conversationScrollRef.value;
+  if (!container) return;
+  container.scrollTo({
+    top: container.scrollHeight,
+    behavior,
+  });
+};
+
+const followConversation = (behavior = "smooth") => {
+  nextTick(() => scrollConversationToBottom(behavior));
+};
+
 onMounted(fetchTasks);
 
 watch(activeTask, () => {
   ensurePolling();
 }, { deep: true });
+
+watch(
+  () => [activeTaskId.value, showDraftMessage.value],
+  () => {
+    followConversation("auto");
+  },
+);
+
+watch(
+  () => [
+    activeTask.value?.status || "",
+    activeTask.value?.status_message || "",
+    activeTask.value?.updated_at || "",
+    activeTask.value?.logs?.length || 0,
+    activeTask.value?.execution_steps?.length || 0,
+    activeTask.value?.current_step_index || 0,
+    activeTask.value?.output_file_path || "",
+  ],
+  () => {
+    if (showDraftMessage.value || ["planning", "running"].includes(activeTask.value?.status || "")) {
+      followConversation("smooth");
+    }
+  },
+);
 
 onBeforeUnmount(() => {
   stopPolling();

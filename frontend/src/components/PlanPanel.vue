@@ -24,13 +24,16 @@
       </template>
       <template v-else>
       <li>操作文件：{{ fileLabel }}</li>
-      <li>操作 sheet：{{ targetSheet }}</li>
-      <li>操作类型：{{ operationLabel }}</li>
-      <li v-if="dateUpdateLabel">目标修改：{{ dateUpdateLabel }}</li>
-      <li v-if="sortLabel">排序字段：{{ sortLabel }}</li>
-      <li v-if="orderLabel">排序方向：{{ orderLabel }}</li>
-      <li v-if="styleLabels.length">格式化：{{ styleLabels.join("、") }}</li>
-      <li v-if="cleanLabels.length">清洗：{{ cleanLabels.join("、") }}</li>
+      <template v-for="(sheet, index) in sheetPlans" :key="`${sheet.operation}-${index}`">
+        <li>步骤 {{ index + 1 }}：{{ operationLabelFor(sheet) }}</li>
+        <li>目标 sheet：{{ targetSheetFor(sheet) }}</li>
+        <li v-if="dateUpdateLabelFor(sheet)">目标修改：{{ dateUpdateLabelFor(sheet) }}</li>
+        <li v-if="fillLabelFor(sheet)">写入字段：{{ fillLabelFor(sheet) }}</li>
+        <li v-if="sortLabelFor(sheet)">排序字段：{{ sortLabelFor(sheet) }}</li>
+        <li v-if="orderLabelFor(sheet)">排序方向：{{ orderLabelFor(sheet) }}</li>
+        <li v-if="styleLabelsFor(sheet).length">格式化：{{ styleLabelsFor(sheet).join("、") }}</li>
+        <li v-if="cleanLabelsFor(sheet).length">清洗：{{ cleanLabelsFor(sheet).join("、") }}</li>
+      </template>
       <li v-if="task?.excel_plan?.notes?.length">备注：{{ task.excel_plan.notes.join("；") }}</li>
       </template>
     </ol>
@@ -72,6 +75,7 @@ defineEmits(["confirm"]);
 const isMergePlan = computed(() => props.task?.excel_plan?.action === "merge_workbooks");
 const isSplitPlan = computed(() => primarySheet.value?.operation === "split_sheet_by_column");
 const mergePlan = computed(() => props.task?.excel_plan?.merge || null);
+const sheetPlans = computed(() => props.task?.excel_plan?.sheets || []);
 const primarySheet = computed(() => props.task?.excel_plan?.sheets?.[0] || null);
 const displayStatus = computed(() => props.task?.excel_plan ? "completed" : "pending");
 const statusType = computed(() => displayStatus.value === "completed" ? "success" : "info");
@@ -100,38 +104,55 @@ const operationMap = {
   append_columns: "新增字段",
   split_sheet_by_column: "按字段拆分 sheet",
   update_date_month: "修改日期字段",
+  fill_column_with_value: "写入字段值",
 };
 
-const operationLabel = computed(() => operationMap[primarySheet.value?.operation] || "执行任务");
-const sortLabel = computed(() => primarySheet.value?.sort?.column || "");
-const orderLabel = computed(() => {
-  if (!primarySheet.value?.sort?.order) return "";
-  return primarySheet.value.sort.order === "desc" ? "从高到低 / 降序" : "从低到高 / 升序";
-});
+const operationLabelFor = (sheet) => operationMap[sheet?.operation] || "执行任务";
+const targetSheetFor = (sheet) => sheet?.source_sheet || sheet?.name || "未指定";
+const sortLabelFor = (sheet) => sheet?.sort?.column || "";
+const orderLabelFor = (sheet) => {
+  if (!sheet?.sort?.order) return "";
+  return sheet.sort.order === "desc" ? "从高到低 / 降序" : "从低到高 / 升序";
+};
 
-const styleLabels = computed(() => {
-  const style = primarySheet.value?.style || {};
+const styleLabelsFor = (sheet) => {
+  const style = sheet?.style || {};
   return [
     style.freeze_header ? "冻结表头" : "",
     style.auto_filter ? "开启筛选" : "",
     style.auto_width ? "自动列宽" : "",
     style.header_bold ? "表头加粗" : "",
   ].filter(Boolean);
-});
+};
 
-const cleanLabels = computed(() => {
-  const clean = primarySheet.value?.clean || {};
+const cleanLabelsFor = (sheet) => {
+  const clean = sheet?.clean || {};
   return [
     clean.remove_empty_rows ? "删除空行" : "",
     clean.trim_text ? "去除文本空格" : "",
   ].filter(Boolean);
-});
+};
 
-const dateUpdateLabel = computed(() => {
-  const plan = primarySheet.value?.date_update;
+const dateUpdateLabelFor = (sheet) => {
+  const plan = sheet?.date_update;
   if (!plan?.target_month) return "";
   return `将日期月份修改为 ${plan.target_month} 月`;
-});
+};
+
+const fillLabelFor = (sheet) => {
+  const plan = sheet?.fill;
+  if (!plan?.column_name) return "";
+  if (plan.value_mode === "today_date") {
+    return `${plan.column_name} = 今天日期`;
+  }
+  if (plan.value_mode === "today_datetime") {
+    return `${plan.column_name} = 当前时间`;
+  }
+  if (plan.value_mode === "static_text") {
+    return `${plan.column_name} = ${plan.static_value || ""}`;
+  }
+  return plan.column_name;
+};
 
 const formatJson = (value) => {
   if (!value) return "暂无";

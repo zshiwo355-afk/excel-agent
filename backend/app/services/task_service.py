@@ -1,4 +1,5 @@
 import json
+import shutil
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6,12 +7,17 @@ from uuid import uuid4
 
 from fastapi import UploadFile
 
-from app.agent.graph import execute_graph, plan_graph
+from app.agent.graph import execute_graph
+from app.agent.nodes.file_analyze_node import file_analyze_node
+from app.agent.nodes.intent_node import intent_node
+from app.agent.nodes.plan_validate_node import plan_validate_node
+from app.agent.nodes.planner_node import planner_node
+from app.agent.nodes.task_decomposer_node import task_decomposer_node
 from app.agent.state import AgentState
 from app.config import get_settings
 from app.services.file_service import file_service
 from app.schemas.execution_step import ExecutionStep
-from app.schemas.task import TaskDetail
+from app.schemas.task import ClarificationTurn, TaskDetail
 from app.utils.jsonable import to_jsonable
 
 
@@ -51,6 +57,12 @@ class TaskService:
         task.current_step_index = state.current_step_index
         task.confirmed_step_ids = state.confirmed_step_ids
         task.pending_step_id = state.pending_step_id
+        task.status_message = state.status_message
+        task.clarification_question = state.clarification_question
+        task.clarification_history = [
+            turn if isinstance(turn, ClarificationTurn) else ClarificationTurn.model_validate(turn)
+            for turn in state.clarification_history
+        ]
         task.error = state.error
         task.error_message = state.error_message
         task.technical_error = state.technical_error
@@ -84,6 +96,30 @@ class TaskService:
             raise FileNotFoundError(f"File not found: {file_path}")
         return path
 
+    def delete_task(self, task_id: str) -> None:
+        task = self.get_task(task_id)
+
+        artifact_paths = []
+        if task.output_file_path:
+            artifact_paths.append(Path(task.output_file_path))
+        artifact_paths.extend(Path(path) for path in task.step_artifacts.values())
+        artifact_paths.extend(Path(item.file_path) for item in task.uploaded_files if item.file_path)
+
+        for path in artifact_paths:
+            try:
+                if path.exists() and path.is_file():
+                    path.unlink()
+            except Exception:
+                pass
+
+        for directory in (self.settings.uploads_dir / task_id, self.settings.outputs_dir / task_id):
+            if directory.exists():
+                shutil.rmtree(directory, ignore_errors=True)
+
+        task_path = self._task_path(task_id)
+        if task_path.exists():
+            task_path.unlink()
+
     async def create_task(
         self,
         message: str,
@@ -115,6 +151,7 @@ class TaskService:
             task_id=task_id,
             message=message,
             status="planning",
+            status_message="正在分析文件",
             auto_execute=self.settings.auto_execute_default if auto_execute is None else auto_execute,
             uploaded_file_path=uploaded_file_path,
             uploaded_file_paths=uploaded_file_paths,
@@ -123,43 +160,139 @@ class TaskService:
             updated_at=self._now(),
             logs=logs,
         )
-        self.save_task(task)
+        return self.save_task(task)
+
+    def _compose_message_for_planning(self, task: TaskDetail) -> str:
+        sections = [task.message.strip()]
+        for turn in task.clarification_history:
+            sections.append(f"Agent 追问：{turn.question}")
+            if turn.answer:
+                sections.append(f"用户补充：{turn.answer}")
+        return "\n\n".join(section for section in sections if section)
+
+    def _build_agent_state_from_task(self, task: TaskDetail) -> AgentState:
+        return AgentState(
+            task_id=task.task_id,
+            message=self._compose_message_for_planning(task),
+            uploaded_file_path=task.uploaded_file_path,
+            uploaded_file_paths=task.uploaded_file_paths,
+            uploaded_files=[item.model_dump(mode="json") for item in task.uploaded_files],
+            workbook_context=task.workbook_context,
+            workbook_contexts=task.workbook_contexts,
+            excel_plan=task.excel_plan,
+            task_plan=task.task_plan,
+            task_mode=task.task_mode,
+            step_artifacts=task.step_artifacts,
+            current_step_index=task.current_step_index,
+            pending_step_id=task.pending_step_id,
+            confirmed_step_ids=list(task.confirmed_step_ids),
+            status_message=task.status_message,
+            clarification_question=task.clarification_question,
+            clarification_history=[turn.model_dump(mode="json") for turn in task.clarification_history],
+            raw_llm_response=task.raw_llm_response,
+            execution_steps=task.execution_steps,
+            logs=task.logs.copy(),
+            status=task.status,
+            error=task.error,
+            error_message=task.error_message,
+            technical_error=task.technical_error,
+        )
+
+    def _set_planning_stage(self, state: AgentState, message: str) -> None:
+        state.status = "planning"
+        state.status_message = message
+        state.error = None
+        state.error_message = None
+        state.technical_error = None
+        state.clarification_question = None
+
+    def run_task_planning(self, task_id: str) -> None:
+        task = self.get_task(task_id)
+        state = self._build_agent_state_from_task(task)
 
         try:
-            state = AgentState(
-                task_id=task.task_id,
-                message=task.message,
-                uploaded_file_path=task.uploaded_file_path,
-                uploaded_file_paths=task.uploaded_file_paths,
-                uploaded_files=[item.model_dump(mode="json") for item in task.uploaded_files],
-                logs=task.logs.copy(),
-                status=task.status,
+            planning_stages = (
+                ("正在分析文件", file_analyze_node),
+                ("正在理解需求", intent_node),
             )
-            result = AgentState.model_validate(plan_graph.invoke(state))
-            task.status = result.status
-            task.task_mode = result.task_mode
-            task.workbook_context = result.workbook_context
-            task.workbook_contexts = result.workbook_contexts
-            task.excel_plan = result.excel_plan
-            task.task_plan = result.task_plan
-            task.pending_step_id = result.pending_step_id
-            task.step_artifacts = result.step_artifacts
-            task.current_step_index = result.current_step_index
-            task.confirmed_step_ids = result.confirmed_step_ids
-            task.raw_llm_response = result.raw_llm_response
-            task.execution_steps = result.execution_steps
-            task.logs = result.logs
-            task.error = result.error
-            task.error_message = result.error_message
-            task.technical_error = result.technical_error
+            for message, node in planning_stages:
+                self._set_planning_stage(state, message)
+                self.save_runtime_state(state)
+                state = AgentState.model_validate(node(state))
+                self.save_runtime_state(state)
+                if state.status in {"failed", "needs_input"}:
+                    return
+
+            if state.task_mode == "complex":
+                self._set_planning_stage(state, "正在生成执行计划")
+                self.save_runtime_state(state)
+                state = AgentState.model_validate(task_decomposer_node(state))
+                self.save_runtime_state(state)
+            else:
+                self._set_planning_stage(state, "正在生成执行计划")
+                self.save_runtime_state(state)
+                state = AgentState.model_validate(planner_node(state))
+                self.save_runtime_state(state)
+                if state.status not in {"failed", "needs_input"}:
+                    self._set_planning_stage(state, "正在校验执行计划")
+                    self.save_runtime_state(state)
+                    state = AgentState.model_validate(plan_validate_node(state))
+                    self.save_runtime_state(state)
+
+            if task.auto_execute and state.status == "waiting_confirm":
+                self.start_task_execution(task_id)
+                self.run_task_execution(task_id)
         except Exception:
+            task = self.get_task(task_id)
             task.status = "failed"
+            task.status_message = "思考失败"
             task.error = "任务执行失败"
             task.error_message = "任务执行失败，请检查执行日志。"
             task.technical_error = traceback.format_exc()
             task.logs.append(traceback.format_exc())
+            task.updated_at = self._now()
+            self.save_task(task)
 
+    def reply_to_task(self, task_id: str, answer: str) -> TaskDetail:
+        task = self.get_task(task_id)
+        if task.status != "needs_input":
+            raise ValueError("Task is not waiting for clarification.")
+        trimmed = answer.strip()
+        if not trimmed:
+            raise ValueError("answer cannot be empty.")
+
+        updated_history: list[ClarificationTurn] = []
+        answered = False
+        for turn in task.clarification_history:
+            if not answered and turn.answer is None:
+                updated_history.append(
+                    turn.model_copy(update={"answer": trimmed, "answered_at": self._now()})
+                )
+                answered = True
+            else:
+                updated_history.append(turn)
+        if not answered and task.clarification_question:
+            updated_history.append(
+                ClarificationTurn(
+                    question=task.clarification_question,
+                    answer=trimmed,
+                    created_at=self._now(),
+                    answered_at=self._now(),
+                )
+            )
+
+        task.status = "planning"
+        task.status_message = "正在理解补充信息"
+        task.clarification_question = None
+        task.clarification_history = updated_history
+        task.excel_plan = None
+        task.task_plan = None
+        task.error = None
+        task.error_message = None
+        task.technical_error = None
+        task.raw_llm_response = None
         task.updated_at = self._now()
+        task.logs.append("User clarification received. Planning resumed.")
         return self.save_task(task)
 
     def start_task_execution(self, task_id: str) -> TaskDetail:
@@ -181,6 +314,8 @@ class TaskService:
                 confirmed_step_ids.append(task.pending_step_id)
 
         task.status = "running"
+        task.status_message = "开始执行"
+        task.clarification_question = None
         task.error = None
         task.error_message = None
         task.technical_error = None
@@ -192,25 +327,9 @@ class TaskService:
         task = self.get_task(task_id)
         confirmed_step_ids = list(task.confirmed_step_ids)
         try:
-            state = AgentState(
-                task_id=task.task_id,
-                message=task.message,
-                uploaded_file_path=task.uploaded_file_path,
-                uploaded_file_paths=task.uploaded_file_paths,
-                uploaded_files=[item.model_dump(mode="json") for item in task.uploaded_files],
-                workbook_context=task.workbook_context,
-                workbook_contexts=task.workbook_contexts,
-                excel_plan=task.excel_plan,
-                task_plan=task.task_plan,
-                task_mode=task.task_mode,
-                step_artifacts=task.step_artifacts,
-                current_step_index=task.current_step_index,
-                pending_step_id=task.pending_step_id,
-                confirmed_step_ids=confirmed_step_ids,
-                execution_steps=task.execution_steps,
-                logs=task.logs.copy(),
-                status=task.status,
-            )
+            state = self._build_agent_state_from_task(task)
+            state.confirmed_step_ids = confirmed_step_ids
+            state.status_message = "正在执行"
             result = AgentState.model_validate(execute_graph.invoke(state))
             task.status = result.status
             task.output_file_path = result.output_file_path
@@ -219,13 +338,26 @@ class TaskService:
             task.step_artifacts = result.step_artifacts
             task.current_step_index = result.current_step_index
             task.confirmed_step_ids = result.confirmed_step_ids
+            task.status_message = result.status_message
+            task.clarification_question = result.clarification_question
+            task.clarification_history = [
+                turn if isinstance(turn, ClarificationTurn) else ClarificationTurn.model_validate(turn)
+                for turn in result.clarification_history
+            ]
             task.execution_steps = result.execution_steps
             task.logs = result.logs
             if result.status == "failed":
+                task.status_message = "执行失败"
                 task.error = result.error or "Excel 生成失败"
                 task.error_message = result.error_message
                 task.technical_error = result.technical_error
             else:
+                if result.status == "completed":
+                    task.status_message = "执行完成"
+                elif result.status == "waiting_step_confirm":
+                    task.status_message = "等待步骤确认"
+                else:
+                    task.status_message = result.status_message or "正在执行"
                 task.error = None
                 task.error_message = None
                 task.technical_error = None
@@ -242,6 +374,7 @@ class TaskService:
             except Exception:
                 pass
             task.status = "failed"
+            task.status_message = "执行失败"
             task.error = "Excel 生成失败"
             task.error_message = f"Excel 生成失败：{exc}"
             task.technical_error = traceback.format_exc()

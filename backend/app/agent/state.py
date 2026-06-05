@@ -20,6 +20,9 @@ class AgentState(BaseModel):
     current_step_index: int = 0
     pending_step_id: str | None = None
     confirmed_step_ids: list[str] = Field(default_factory=list)
+    status_message: str | None = None
+    clarification_question: str | None = None
+    clarification_history: list[dict[str, Any]] = Field(default_factory=list)
     last_executed_step_id: str | None = None
     last_step_artifact: str | None = None
     last_step_result: dict[str, Any] | None = None

@@ -47,5 +47,14 @@ export const confirmTask = async (taskId) => {
   return data;
 };
 
+export const replyTask = async (taskId, answer) => {
+  const { data } = await apiClient.post(`/tasks/${taskId}/reply`, { answer });
+  return data;
+};
+
+export const deleteTask = async (taskId) => {
+  await apiClient.delete(`/tasks/${taskId}`);
+};
+
 export const getDownloadUrl = (taskId) =>
   `${apiClient.defaults.baseURL}/tasks/${taskId}/download`;

@@ -38,6 +38,7 @@ SORT_COLUMN_ALIASES = {
     "价格": ["价格", "单价", "金额", "销售额", "金价", "报价", "价格(元)", "价格（元）"],
     "日期": ["日期", "销售日期", "时间", "下单日期", "成交日期"],
 }
+TODAY_KEYWORDS = ["今天", "今日", "当天", "当前日期", "今天日期"]
 SPLIT_COLUMN_ALIASES = {
     "公司": ["公司", "公司名称", "企业", "企业名称", "客户公司", "单位", "药店", "门店"],
     "门店": ["门店", "门店名称", "药店", "药店名称"],
@@ -97,6 +98,7 @@ class LLMService:
                     "split_sheet_by_column",
                     "apply_template_sheet",
                     "update_date_month",
+                    "fill_column_with_value",
                 ],
                 "supported_merge_modes": ["append_rows"],
                 "supported_split_modes": ["sheet_per_value"],
@@ -272,7 +274,31 @@ class LLMService:
         }
 
     def _is_date_update_request(self, message: str) -> bool:
+        if self._is_fill_today_request(message):
+            return False
         return "日期" in message and any(keyword in message for keyword in ["修改为", "改为", "改成", "变成"])
+
+    def _is_fill_today_request(self, message: str) -> bool:
+        has_today = any(keyword in message for keyword in TODAY_KEYWORDS)
+        has_date = "日期" in message or "时间" in message
+        has_fill_intent = any(
+            keyword in message
+            for keyword in [
+                "插入",
+                "新增",
+                "添加",
+                "补一列",
+                "增加一列",
+                "末尾添加",
+                "末尾插入",
+                "填入",
+                "写入",
+                "设为",
+                "就是",
+                "填上",
+            ]
+        )
+        return has_today and has_date and has_fill_intent
 
     def _extract_target_month(self, message: str) -> int | None:
         match = re.search(r"([1-9]|1[0-2])月", message)
@@ -574,14 +600,151 @@ class LLMService:
         workbook_context: dict[str, Any] | None,
     ) -> dict[str, Any]:
         normalized_payload = self._coerce_legacy_excel_plan(payload)
-        sheets = normalized_payload.get("sheets") or self._build_fallback_modify_sheets(user_input, workbook_context)
+        sheets = normalized_payload.get("sheets") or []
+        if not sheets or any(not self._is_usable_modify_sheet(sheet) for sheet in sheets):
+            sheets = self._build_fallback_modify_sheets(user_input, workbook_context)
+        sheets = self._rewrite_today_fill_operations(sheets, user_input, workbook_context)
         sheets = [self._ensure_sort_plan(sheet, user_input, workbook_context) for sheet in sheets]
+        sheets = self._augment_modify_sheets(sheets, user_input, workbook_context)
         return {
             "action": "modify_workbook",
             "workbook_name": normalized_payload.get("workbook_name") or "处理结果.xlsx",
             "sheets": sheets,
             "notes": normalized_payload.get("notes", []),
         }
+
+    def _is_usable_modify_sheet(self, sheet: dict[str, Any]) -> bool:
+        if not isinstance(sheet, dict):
+            return False
+        operation = sheet.get("operation")
+        name = sheet.get("name") or sheet.get("source_sheet")
+        if not operation or not name:
+            return False
+        return True
+
+    def _rewrite_today_fill_operations(
+        self,
+        sheets: list[dict[str, Any]],
+        user_input: str,
+        workbook_context: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not self._is_fill_today_request(user_input):
+            return sheets
+
+        source_sheet = self._pick_source_sheet(workbook_context)
+        sheet_context = self._pick_sheet_context(workbook_context, source_sheet) if source_sheet else {}
+        header_row = sheet_context.get("header_row", 1)
+        data_start_row = sheet_context.get("data_start_row", 2)
+
+        rewritten: list[dict[str, Any]] = []
+        has_fill = False
+        for sheet in sheets:
+            operation = sheet.get("operation")
+            if operation == "update_date_month":
+                rewritten.append(
+                    {
+                        "operation": "fill_column_with_value",
+                        "name": sheet.get("name") or sheet.get("source_sheet") or source_sheet,
+                        "source_sheet": sheet.get("source_sheet") or source_sheet,
+                        "header_row": sheet.get("header_row") or header_row,
+                        "data_start_row": sheet.get("data_start_row") or data_start_row,
+                        "fill": {
+                            "column_name": "日期",
+                            "value_mode": "today_date",
+                            "create_if_missing": True,
+                            "overwrite_existing": True,
+                        },
+                    }
+                )
+                has_fill = True
+                continue
+
+            if operation == "fill_column_with_value":
+                fill = dict(sheet.get("fill") or {})
+                fill.setdefault("column_name", "日期")
+                fill.setdefault("value_mode", "today_date")
+                fill.setdefault("create_if_missing", True)
+                fill.setdefault("overwrite_existing", True)
+                rewritten.append({**sheet, "fill": fill})
+                has_fill = True
+                continue
+
+            rewritten.append(sheet)
+
+        if not has_fill and source_sheet:
+            rewritten.append(
+                {
+                    "operation": "fill_column_with_value",
+                    "name": source_sheet,
+                    "source_sheet": source_sheet,
+                    "header_row": header_row,
+                    "data_start_row": data_start_row,
+                    "fill": {
+                        "column_name": "日期",
+                        "value_mode": "today_date",
+                        "create_if_missing": True,
+                        "overwrite_existing": True,
+                    },
+                }
+            )
+
+        return rewritten
+
+    def _augment_modify_sheets(
+        self,
+        sheets: list[dict[str, Any]],
+        user_input: str,
+        workbook_context: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        source_sheet = self._pick_source_sheet(workbook_context)
+        if not source_sheet:
+            return sheets
+
+        sheet_context = self._pick_sheet_context(workbook_context, source_sheet)
+        header_row = sheet_context.get("header_row") if sheet_context else 1
+        data_start_row = sheet_context.get("data_start_row") if sheet_context else 2
+        sort_column = self._detect_sort_column(user_input, workbook_context, source_sheet)
+
+        augmented = list(sheets)
+        has_sort = any(sheet.get("operation") in {"sort_rows", "format_and_sort_sheet"} for sheet in augmented)
+        has_date_update = any(sheet.get("operation") == "update_date_month" for sheet in augmented)
+        has_fill = any(sheet.get("operation") == "fill_column_with_value" for sheet in augmented)
+
+        if sort_column and not has_sort:
+            augmented.insert(
+                0,
+                {
+                    "operation": "sort_rows",
+                    "name": source_sheet,
+                    "source_sheet": source_sheet,
+                    "header_row": header_row,
+                    "data_start_row": data_start_row,
+                    "sort": {
+                        "column": sort_column,
+                        "order": self._detect_sort_order(user_input),
+                        "numeric": True,
+                    },
+                },
+            )
+
+        if self._is_fill_today_request(user_input) and not has_fill and not has_date_update:
+            augmented.append(
+                {
+                    "operation": "fill_column_with_value",
+                    "name": source_sheet,
+                    "source_sheet": source_sheet,
+                    "header_row": header_row,
+                    "data_start_row": data_start_row,
+                    "fill": {
+                        "column_name": "日期",
+                        "value_mode": "today_date",
+                        "create_if_missing": True,
+                        "overwrite_existing": True,
+                    },
+                }
+            )
+
+        return augmented
 
     def _normalize_create(self, payload: dict[str, Any], user_input: str) -> dict[str, Any]:
         normalized_payload = self._coerce_legacy_excel_plan(payload)
@@ -601,9 +764,6 @@ class LLMService:
         if self._is_split_request(user_input, workbook_context):
             return self._build_split_plan(user_input, workbook_context)["sheets"]
 
-        if date_update_plan := self._build_date_update_plan(user_input, workbook_context):
-            return date_update_plan["sheets"]
-
         source_sheet = self._pick_source_sheet(workbook_context)
         if not source_sheet:
             return []
@@ -611,10 +771,31 @@ class LLMService:
         sheet_context = self._pick_sheet_context(workbook_context, source_sheet)
         header_row = sheet_context.get("header_row") if sheet_context else 1
         data_start_row = sheet_context.get("data_start_row") if sheet_context else 2
+        sheets: list[dict[str, Any]] = []
+
+        if date_update_plan := self._build_date_update_plan(user_input, workbook_context):
+            sheets.extend(date_update_plan["sheets"])
+        elif self._is_fill_today_request(user_input):
+            sheets.append(
+                {
+                    "operation": "fill_column_with_value",
+                    "name": source_sheet,
+                    "source_sheet": source_sheet,
+                    "header_row": header_row,
+                    "data_start_row": data_start_row,
+                    "fill": {
+                        "column_name": "日期",
+                        "value_mode": "today_date",
+                        "create_if_missing": True,
+                        "overwrite_existing": True,
+                    },
+                }
+            )
 
         sort_column = self._detect_sort_column(user_input, workbook_context, source_sheet)
         if sort_column:
-            return [
+            sheets.insert(
+                0,
                 {
                     "operation": "sort_rows",
                     "name": source_sheet,
@@ -630,8 +811,11 @@ class LLMService:
                         "order": self._detect_sort_order(user_input),
                         "numeric": True,
                     },
-                }
-            ]
+                },
+            )
+
+        if sheets:
+            return sheets
 
         return [
             {

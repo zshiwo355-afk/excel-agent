@@ -143,8 +143,53 @@ def run_sort_normalize_test() -> None:
     ExcelPlan.model_validate(normalized_asc)
 
 
+def run_today_fill_rewrite_test() -> None:
+    workbook_context = {
+        "sheet_names": ["今日金价行情"],
+        "sheets": [
+            {
+                "name": "今日金价行情",
+                "header_row": 2,
+                "data_start_row": 3,
+                "headers": ["价格参考", "品类"],
+            }
+        ],
+    }
+
+    normalized = llm_service.normalize_excel_plan(
+        {
+            "action": "modify_workbook",
+            "workbook_name": "处理结果.xlsx",
+            "sheets": [
+                {
+                    "operation": "update_date_month",
+                    "name": "今日金价行情",
+                    "source_sheet": "今日金价行情",
+                    "header_row": 2,
+                    "data_start_row": 3,
+                    "date_update": {
+                        "target_month": 6,
+                        "target_columns": [],
+                    },
+                }
+            ],
+        },
+        "帮我把价格从低到高排序，然后日期就是今天",
+        workbook_context,
+        [workbook_context],
+    )
+
+    assert normalized["action"] == "modify_workbook"
+    assert normalized["sheets"][0]["operation"] == "sort_rows"
+    assert normalized["sheets"][1]["operation"] == "fill_column_with_value"
+    assert normalized["sheets"][1]["fill"]["column_name"] == "日期"
+    assert normalized["sheets"][1]["fill"]["value_mode"] == "today_date"
+    ExcelPlan.model_validate(normalized)
+
+
 if __name__ == "__main__":
     run_normalize_test()
     run_template_normalize_test()
     run_sort_normalize_test()
+    run_today_fill_rewrite_test()
     print("excel plan normalize test passed")

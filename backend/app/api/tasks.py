@@ -1,9 +1,14 @@
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel
 
 from app.schemas.task import TaskDetail
 from app.services.task_service import task_service
 
 router = APIRouter(tags=["tasks"])
+
+
+class TaskReplyPayload(BaseModel):
+    answer: str
 
 
 @router.get("/tasks", response_model=list[TaskDetail])
@@ -26,9 +31,7 @@ async def create_task(
             uploads=files,
             auto_execute=auto_execute,
         )
-        if task.auto_execute and task.status == "waiting_confirm":
-            task = task_service.start_task_execution(task.task_id)
-            background_tasks.add_task(task_service.run_task_execution, task.task_id)
+        background_tasks.add_task(task_service.run_task_planning, task.task_id)
         return task
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -52,3 +55,23 @@ def confirm_task(task_id: str, background_tasks: BackgroundTasks) -> TaskDetail:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/tasks/{task_id}/reply", response_model=TaskDetail)
+def reply_task(task_id: str, payload: TaskReplyPayload, background_tasks: BackgroundTasks) -> TaskDetail:
+    try:
+        task = task_service.reply_to_task(task_id, payload.answer)
+        background_tasks.add_task(task_service.run_task_planning, task.task_id)
+        return task
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task(task_id: str) -> None:
+    try:
+        task_service.delete_task(task_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

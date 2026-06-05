@@ -7,6 +7,7 @@ from app.schemas.execution_step import ExecutionStep
 
 TaskStatus = Literal[
     "planning",
+    "needs_input",
     "waiting_confirm",
     "waiting_step_confirm",
     "running",
@@ -20,6 +21,13 @@ class UploadedFileItem(BaseModel):
     file_name: str
     file_path: str
     size: int = 0
+
+
+class ClarificationTurn(BaseModel):
+    question: str
+    answer: str | None = None
+    created_at: str
+    answered_at: str | None = None
 
 
 class TaskDetail(BaseModel):
@@ -40,6 +48,9 @@ class TaskDetail(BaseModel):
     current_step_index: int = 0
     confirmed_step_ids: list[str] = Field(default_factory=list)
     pending_step_id: str | None = None
+    status_message: str | None = None
+    clarification_question: str | None = None
+    clarification_history: list[ClarificationTurn] = Field(default_factory=list)
     error: str | None = None
     error_message: str | None = None
     technical_error: str | None = None

@@ -46,6 +46,32 @@ class DateUpdatePlan(BaseModel):
         return self
 
 
+class FillColumnPlan(BaseModel):
+    column_name: str
+    value_mode: Literal["static_text", "today_date", "today_datetime"] = "static_text"
+    static_value: str | None = None
+    create_if_missing: bool = True
+    overwrite_existing: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, values: Any):
+        if isinstance(values, dict) and "value_mode" not in values and values.get("value_type"):
+            values = {**values, "value_mode": values["value_type"]}
+        return values
+
+    @model_validator(mode="after")
+    def validate_fill(self):
+        self.column_name = self.column_name.strip()
+        if not self.column_name:
+            raise ValueError("fill.column_name cannot be empty.")
+        if self.value_mode == "static_text":
+            self.static_value = (self.static_value or "").strip()
+            if not self.static_value:
+                raise ValueError("fill.static_value cannot be empty when value_mode=static_text.")
+        return self
+
+
 class TemplateSheetPlan(BaseModel):
     template_file_id: str
     template_sheet: str
@@ -132,8 +158,9 @@ class SheetPlan(BaseModel):
         "split_sheet_by_column",
         "apply_template_sheet",
         "update_date_month",
+        "fill_column_with_value",
     ]
-    name: str
+    name: str | None = None
     columns: list[str] | None = None
     sample_rows: int | None = None
     source_sheet: str | None = None
@@ -148,12 +175,13 @@ class SheetPlan(BaseModel):
     split: SplitPlan | None = None
     template: TemplateSheetPlan | None = None
     date_update: DateUpdatePlan | None = None
+    fill: FillColumnPlan | None = None
     rows: list[dict[str, Any]] | None = None
     formulas: list[FormulaPlan] | None = None
 
     @model_validator(mode="after")
     def validate_name(self):
-        value = self.name.strip()
+        value = (self.name or self.source_sheet or "").strip()
         if not value:
             raise ValueError("Sheet name cannot be empty.")
         if len(value) > 31:
@@ -174,6 +202,11 @@ class SheetPlan(BaseModel):
                 raise ValueError("update_date_month requires date_update.")
             if not self.source_sheet:
                 raise ValueError("update_date_month requires source_sheet.")
+        if self.operation == "fill_column_with_value":
+            if not self.fill:
+                raise ValueError("fill_column_with_value requires fill.")
+            if not self.source_sheet:
+                raise ValueError("fill_column_with_value requires source_sheet.")
         return self
 
 

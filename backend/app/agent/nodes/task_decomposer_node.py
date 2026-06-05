@@ -21,14 +21,17 @@ def task_decomposer_node(state: AgentState) -> AgentState:
         state.task_plan = plan.model_dump(mode="json")
         state.logs.append("TaskPlan generated successfully.")
         state.status = "waiting_confirm"
+        state.status_message = "思考完成"
     except ValidationError as exc:
         state.status = "failed"
+        state.status_message = "思考失败"
         state.error = "TaskPlan 校验失败"
         state.error_message = "复杂任务拆解失败，返回的 TaskPlan 结构不合法。"
         state.technical_error = str(exc)
         state.logs.append(f"TaskPlan validation failed: {exc}")
     except Exception as exc:
         state.status = "failed"
+        state.status_message = "思考失败"
         state.error = "TaskPlan 生成失败"
         state.error_message = str(exc)
         state.technical_error = repr(exc)

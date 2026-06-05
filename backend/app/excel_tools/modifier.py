@@ -16,18 +16,50 @@ from app.excel_tools.reader import load_workbook_safe
 from app.schemas.excel_plan import ExcelPlan, MetricPlan, SheetPlan
 
 
-def _sheet_headers(sheet) -> list[str]:
-    return [str(cell.value).strip() for cell in sheet[1] if cell.value is not None]
+def _sheet_headers(sheet, header_row: int = 1) -> list[str]:
+    headers: list[str] = []
+    for col_idx in range(1, sheet.max_column + 1):
+        cell = sheet.cell(row=header_row, column=col_idx)
+        if isinstance(cell, MergedCell) or cell.value is None:
+            continue
+        value = str(cell.value).strip()
+        if value:
+            headers.append(value)
+    return headers
 
 
-def _append_columns(sheet, columns: list[str]) -> None:
-    existing_headers = _sheet_headers(sheet)
-    next_column = len(existing_headers) + 1
+def _next_writable_header_column(sheet, header_row: int = 1) -> int:
+    for col_idx in range(1, sheet.max_column + 1):
+        cell = sheet.cell(row=header_row, column=col_idx)
+        if isinstance(cell, MergedCell):
+            continue
+        if cell.value in (None, ""):
+            return col_idx
+    return sheet.max_column + 1
+
+
+def _append_columns(sheet, columns: list[str], header_row: int = 1) -> None:
+    existing_headers = _sheet_headers(sheet, header_row)
+    next_column = _next_writable_header_column(sheet, header_row)
     for column in columns:
         if column in existing_headers:
             continue
-        sheet.cell(row=1, column=next_column, value=column)
+        sheet.cell(row=header_row, column=next_column, value=column)
+        existing_headers.append(column)
         next_column += 1
+
+
+def _ensure_column(sheet, column_name: str, header_row: int = 1) -> int:
+    for col_idx in range(1, sheet.max_column + 1):
+        cell = sheet.cell(row=header_row, column=col_idx)
+        if isinstance(cell, MergedCell) or cell.value is None:
+            continue
+        if str(cell.value).strip() == column_name:
+            return col_idx
+
+    next_column = _next_writable_header_column(sheet, header_row)
+    sheet.cell(row=header_row, column=next_column, value=column_name)
+    return next_column
 
 
 def _create_summary_from_source(workbook, plan: SheetPlan) -> None:
@@ -210,6 +242,43 @@ def _update_date_month(sheet, plan: SheetPlan) -> dict[str, object]:
     return {"updated_cells": updated_cells, "target_columns": target_columns}
 
 
+def _fill_column_with_value(sheet, plan: SheetPlan) -> dict[str, object]:
+    if not plan.fill:
+        raise ValueError("fill_column_with_value requires fill.")
+
+    fill_plan = plan.fill
+    header_row = plan.header_row or 1
+    column_index = _ensure_column(sheet, fill_plan.column_name, header_row)
+    data_start_row = plan.data_start_row or ((plan.header_row or 1) + 1)
+    updated_cells = 0
+
+    if fill_plan.value_mode == "today_datetime":
+        fill_value = datetime.now()
+        number_format = "yyyy-mm-dd hh:mm:ss"
+    elif fill_plan.value_mode == "today_date":
+        fill_value = datetime.now().date()
+        number_format = "yyyy-mm-dd"
+    else:
+        fill_value = fill_plan.static_value or ""
+        number_format = None
+
+    target_last_row = max(sheet.max_row, data_start_row)
+    for row_idx in range(data_start_row, target_last_row + 1):
+        cell = sheet.cell(row=row_idx, column=column_index)
+        if cell.value not in (None, "") and not fill_plan.overwrite_existing:
+            continue
+        cell.value = fill_value
+        if number_format:
+            cell.number_format = number_format
+        updated_cells += 1
+
+    return {
+        "updated_cells": updated_cells,
+        "column_name": fill_plan.column_name,
+        "column_index": column_index,
+    }
+
+
 def modify_workbook_from_plan(
     plan: ExcelPlan,
     uploaded_path: str | Path,
@@ -223,7 +292,7 @@ def modify_workbook_from_plan(
             target_name = sheet_plan.source_sheet or sheet_plan.name
             if target_name not in workbook.sheetnames:
                 raise ValueError(f"Sheet '{target_name}' not found for append_columns.")
-            _append_columns(workbook[target_name], sheet_plan.columns or [])
+            _append_columns(workbook[target_name], sheet_plan.columns or [], sheet_plan.header_row or 1)
             apply_style_options(workbook[target_name], sheet_plan.style)
         elif sheet_plan.operation == "create_summary_sheet":
             _create_summary_from_source(workbook, sheet_plan)
@@ -259,6 +328,11 @@ def modify_workbook_from_plan(
             if target_name not in workbook.sheetnames:
                 raise ValueError(f"Sheet '{target_name}' not found for update_date_month.")
             _update_date_month(workbook[target_name], sheet_plan)
+        elif sheet_plan.operation == "fill_column_with_value":
+            target_name = sheet_plan.source_sheet or sheet_plan.name
+            if target_name not in workbook.sheetnames:
+                raise ValueError(f"Sheet '{target_name}' not found for fill_column_with_value.")
+            _fill_column_with_value(workbook[target_name], sheet_plan)
         else:
             raise ValueError(f"Unsupported operation: {sheet_plan.operation}")
 
@@ -297,7 +371,7 @@ def execute_simple_sheet_operation(workbook, sheet_plan: SheetPlan) -> None:
         target_name = sheet_plan.source_sheet or sheet_plan.name
         if target_name not in workbook.sheetnames:
             raise ValueError(f"Sheet '{target_name}' not found for append_columns.")
-        _append_columns(workbook[target_name], sheet_plan.columns or [])
+        _append_columns(workbook[target_name], sheet_plan.columns or [], sheet_plan.header_row or 1)
         return
 
     if sheet_plan.operation == "create_summary_sheet":
@@ -346,6 +420,13 @@ def execute_simple_sheet_operation(workbook, sheet_plan: SheetPlan) -> None:
         if target_name not in workbook.sheetnames:
             raise ValueError(f"Sheet '{target_name}' not found for update_date_month.")
         _update_date_month(workbook[target_name], sheet_plan)
+        return
+
+    if sheet_plan.operation == "fill_column_with_value":
+        target_name = sheet_plan.source_sheet or sheet_plan.name
+        if target_name not in workbook.sheetnames:
+            raise ValueError(f"Sheet '{target_name}' not found for fill_column_with_value.")
+        _fill_column_with_value(workbook[target_name], sheet_plan)
         return
 
     raise ValueError(f"Unsupported operation: {sheet_plan.operation}")
