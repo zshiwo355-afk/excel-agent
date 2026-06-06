@@ -33,11 +33,13 @@ def _append_step(
     title: str,
     detail: str,
     tool_name: str | None = None,
+    phase: str = "execution",
 ) -> ExecutionStep:
     step = ExecutionStep(
         step_id=uuid4().hex,
         title=title,
         status="pending",
+        phase=phase,
         detail=detail,
         tool_name=tool_name,
     )
@@ -91,7 +93,13 @@ def _run_simple_step(
     tool_name: str | None = None,
     result_summary: str | None = None,
 ):
-    step = _append_step(state, title=title, detail=detail, tool_name=tool_name)
+    step = _append_step(
+        state,
+        title=title,
+        detail=detail,
+        tool_name=tool_name,
+        phase="execution",
+    )
     state.logs.append(f"{title} started: {detail}")
     _update_step(state, step, status="running")
     try:
@@ -265,34 +273,89 @@ def executor_node(state: AgentState) -> AgentState:
     output_path = output_dir / f"{Path(plan.workbook_name).stem}.xlsx"
 
     if plan.action == "merge_workbooks":
-        state.logs.append("Executing merge_workbooks.")
-        for source_sheet in plan.merge.source_sheets if plan.merge else []:
-            state.logs.append(f"Merging sheet {source_sheet.file_name} / {source_sheet.sheet_name}")
-        merge_workbooks_by_plan(plan, state.workbook_contexts, output_path)
+        state.logs.append("开始执行合并工作簿。")
+        _run_simple_step(
+            state,
+            title="确认合并来源",
+            detail=f"已选中 {len(plan.merge.source_sheets) if plan.merge else 0} 个来源工作表用于合并。",
+            action=lambda: [
+                state.logs.append(
+                    f"准备合并工作表：{source_sheet.file_name} / {source_sheet.sheet_name}"
+                )
+                for source_sheet in (plan.merge.source_sheets if plan.merge else [])
+            ],
+            tool_name="merge.prepare",
+            result_summary="合并来源确认完成。",
+        )
+        _run_simple_step(
+            state,
+            title="合并上传的工作簿",
+            detail=f"把合并结果写入 {output_path.name}",
+            action=lambda: merge_workbooks_by_plan(plan, state.workbook_contexts, output_path),
+            tool_name="merge_workbooks_by_plan",
+            result_summary=f"已生成合并结果 {output_path.name}。",
+        )
     else:
-        state.logs.append("Executing ExcelPlan.")
+        state.logs.append("开始执行 ExcelPlan。")
         split_sheet_plan = next((sheet for sheet in plan.sheets if sheet.operation == "split_sheet_by_column"), None)
         template_sheet_plan = next((sheet for sheet in plan.sheets if sheet.operation == "apply_template_sheet"), None)
         if template_sheet_plan:
             template = template_sheet_plan.template
-            state.logs.append(
-                f"Applying template sheet {template.template_sheet} from {template.template_file_id} to source {template.source_sheet or template_sheet_plan.source_sheet}"
+            _run_simple_step(
+                state,
+                title="检查模板映射",
+                detail=(
+                    f"模板表 {template.template_sheet} -> "
+                    f"{template.source_sheet or template_sheet_plan.source_sheet}"
+                ),
+                action=lambda: state.logs.append(
+                    f"准备把模板表 {template.template_sheet}（文件 {template.template_file_id}）"
+                    f"应用到 {template.source_sheet or template_sheet_plan.source_sheet}"
+                ),
+                tool_name="template.review",
+                result_summary="模板来源确认完成。",
             )
-            apply_template_sheet_from_plan(plan, state.uploaded_files, output_path)
+            _run_simple_step(
+                state,
+                title="套用模板到工作簿",
+                detail=f"生成模板处理结果 {output_path.name}",
+                action=lambda: apply_template_sheet_from_plan(plan, state.uploaded_files, output_path),
+                tool_name="apply_template_sheet_from_plan",
+                result_summary=f"已生成模板处理结果 {output_path.name}。",
+            )
             if template_sheet_plan.sort:
                 state.logs.append(
-                    f"Sorting templated output by column {template_sheet_plan.sort.column} {template_sheet_plan.sort.order}"
+                    f"按列 {template_sheet_plan.sort.column} {template_sheet_plan.sort.order} 对模板结果排序。"
                 )
         elif split_sheet_plan:
-            state.logs.append(
-                f"Splitting sheet {split_sheet_plan.source_sheet} by column {split_sheet_plan.split.column}"
-            )
             if not state.uploaded_file_path:
                 raise ValueError("Uploaded workbook is required for split_sheet_by_column.")
-            split_result = split_workbook_by_column(plan, Path(state.uploaded_file_path), output_path)
+            _run_simple_step(
+                state,
+                title="检查拆分规则",
+                detail=(
+                    f"{split_sheet_plan.source_sheet} -> 按 {split_sheet_plan.split.column} 拆分"
+                ),
+                action=lambda: state.logs.append(
+                    f"准备按列 {split_sheet_plan.split.column} 拆分工作表 {split_sheet_plan.source_sheet}"
+                ),
+                tool_name="split.review",
+                result_summary="拆分规则确认完成。",
+            )
+            split_result: dict[str, object] = {}
+            _run_simple_step(
+                state,
+                title="按字段拆分子表",
+                detail=f"生成拆分结果 {output_path.name}",
+                action=lambda: split_result.update(
+                    split_workbook_by_column(plan, Path(state.uploaded_file_path), output_path)
+                ),
+                tool_name="split_workbook_by_column",
+                result_summary=f"已生成拆分结果 {output_path.name}。",
+            )
             for sheet_name in split_result["created_sheet_names"]:
-                state.logs.append(f"Created sheet for value: {sheet_name}")
-            state.logs.append(f"Created split sheets: {split_result['total_split_sheets']}")
+                state.logs.append(f"已创建子表：{sheet_name}")
+            state.logs.append(f"共创建 {split_result['total_split_sheets']} 个子表。")
         else:
             if state.workbook_context and any(
                 sheet.get("merged_cells") for sheet in state.workbook_context.get("sheets", [])

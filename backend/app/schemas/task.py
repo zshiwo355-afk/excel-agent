@@ -41,6 +41,9 @@ class TaskDetail(BaseModel):
     output_file_path: str | None = None
     workbook_context: dict[str, Any] | None = None
     workbook_contexts: list[dict[str, Any]] = Field(default_factory=list)
+    goal_understanding: dict[str, Any] | None = None
+    workbook_semantics: dict[str, Any] | None = None
+    task_route: Literal["edit", "summary", "reshape"] = "edit"
     excel_plan: dict[str, Any] | None = None
     task_plan: dict[str, Any] | None = None
     task_mode: Literal["simple", "complex"] = "simple"

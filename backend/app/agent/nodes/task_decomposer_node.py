@@ -12,6 +12,9 @@ def task_decomposer_node(state: AgentState) -> AgentState:
         task_plan = llm_service.generate_task_plan(
             message=state.message,
             workbook_contexts=state.workbook_contexts,
+            goal_understanding=state.goal_understanding,
+            workbook_semantics=state.workbook_semantics,
+            task_route=state.task_route,
         )
         plan = TaskPlan.model_validate(task_plan)
         if len(plan.steps) < 2:

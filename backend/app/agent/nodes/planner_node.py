@@ -19,6 +19,9 @@ def planner_node(state: AgentState) -> AgentState:
             workbook_contexts=state.workbook_contexts,
             uploaded_file_path=state.uploaded_file_path,
             uploaded_file_paths=state.uploaded_file_paths,
+            goal_understanding=state.goal_understanding,
+            workbook_semantics=state.workbook_semantics,
+            task_route=state.task_route,
         )
         state.raw_llm_response = to_jsonable(raw_response)
         state.logs.append(

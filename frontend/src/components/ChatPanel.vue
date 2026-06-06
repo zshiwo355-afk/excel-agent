@@ -6,9 +6,10 @@
       </div>
       <el-input
         class="composer-input"
+        :class="{ 'is-compact': isCompact }"
         :model-value="message"
         type="textarea"
-        :rows="3"
+        :autosize="autosizeConfig"
         resize="none"
         :placeholder="placeholder"
         @update:model-value="$emit('update:message', $event)"
@@ -26,11 +27,12 @@
 </template>
 
 <script setup>
+import { computed } from "vue";
 import { Promotion } from "@element-plus/icons-vue";
 
 import UploadPanel from "./UploadPanel.vue";
 
-defineProps({
+const props = defineProps({
   message: {
     type: String,
     default: "",
@@ -58,6 +60,13 @@ defineProps({
 });
 
 const emit = defineEmits(["submit", "update:message", "file-change"]);
+
+const isCompact = computed(() => !props.message?.trim());
+const autosizeConfig = computed(() => (
+  isCompact.value
+    ? { minRows: 1, maxRows: 4 }
+    : { minRows: 3, maxRows: 8 }
+));
 
 const submit = () => {
   emit("submit");

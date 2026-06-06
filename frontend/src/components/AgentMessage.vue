@@ -1,7 +1,7 @@
 <template>
   <div class="message-row" :class="`role-${role}`">
     <div class="message-shell">
-      <div class="message-label">{{ role === "agent" ? "Agent" : "你" }}</div>
+      <div class="message-label">{{ role === "agent" ? "Agent" : "用户" }}</div>
       <div class="message-card">
         <div v-if="title || status || time" class="message-head">
           <div class="message-title-wrap">

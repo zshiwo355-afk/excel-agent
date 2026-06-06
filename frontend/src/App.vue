@@ -126,6 +126,7 @@ a {
 }
 
 .conversation-panel {
+  position: relative;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -145,7 +146,7 @@ a {
 }
 
 .conversation-inner {
-  max-width: 960px;
+  max-width: 820px;
   margin: 0 auto;
 }
 
@@ -160,6 +161,77 @@ a {
     linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(255, 249, 243, 0.76)),
     var(--panel-bg);
   box-shadow: var(--panel-shadow);
+}
+
+.task-hero {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 0 0 18px;
+  border-bottom: 1px solid rgba(111, 126, 146, 0.16);
+}
+
+.task-hero-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.task-hero-main,
+.task-hero-side {
+  display: grid;
+  gap: 12px;
+}
+
+.task-hero-title {
+  margin: 0;
+  color: var(--text-strong);
+  font-family: "Songti SC", "STSong", serif;
+  font-size: 28px;
+  line-height: 1.24;
+  font-weight: 700;
+}
+
+.task-hero-description {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.task-hero-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.task-hero-stat {
+  display: grid;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(111, 126, 146, 0.1);
+}
+
+.task-hero-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.hero-download-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: #123b3a;
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.hero-download-link:hover {
+  background: #19514f;
 }
 
 .workspace-hero.is-empty {
@@ -245,7 +317,7 @@ a {
 
 .message-row {
   display: flex;
-  margin-bottom: 22px;
+  margin-bottom: 14px;
 }
 
 .role-user {
@@ -264,19 +336,17 @@ a {
 }
 
 .message-card {
-  padding: 20px 22px;
-  border: 1px solid rgba(111, 126, 146, 0.14);
-  background: rgba(255, 253, 250, 0.92);
-  border-radius: 24px;
-  box-shadow: 0 18px 40px rgba(41, 51, 70, 0.06);
-  backdrop-filter: blur(10px);
+  padding: 4px 0 14px 18px;
+  border: 0;
+  border-left: 2px solid rgba(111, 126, 146, 0.18);
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .role-user .message-card {
-  background:
-    linear-gradient(135deg, rgba(213, 245, 239, 0.78), rgba(239, 251, 249, 0.94)),
-    rgba(239, 251, 249, 0.92);
-  border-color: rgba(15, 118, 110, 0.16);
+  border-left-color: rgba(15, 118, 110, 0.36);
 }
 
 .message-title {
@@ -309,6 +379,35 @@ a {
   margin-top: 10px;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.step-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.step-phase-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.step-status-copy {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.step-result {
+  color: var(--text-strong);
 }
 
 .analysis-list {
@@ -396,9 +495,9 @@ a {
   margin: 0;
   padding: 14px 16px;
   color: var(--text-base);
-  background: rgba(250, 246, 240, 0.88);
-  border: 1px solid rgba(111, 126, 146, 0.12);
-  border-radius: 16px;
+  background: rgba(250, 246, 240, 0.5);
+  border: 1px solid rgba(111, 126, 146, 0.08);
+  border-radius: 10px;
   white-space: pre-wrap;
   word-break: break-word;
   overflow: auto;
@@ -468,15 +567,36 @@ a {
   background: linear-gradient(180deg, rgba(244, 239, 231, 0), rgba(244, 239, 231, 0.94) 22%, var(--page-bg) 48%);
 }
 
+.jump-latest {
+  position: absolute;
+  right: 36px;
+  bottom: 178px;
+  z-index: 5;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid rgba(18, 59, 58, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 252, 248, 0.96);
+  color: #123b3a;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 12px 24px rgba(41, 51, 70, 0.08);
+  cursor: pointer;
+}
+
+.jump-latest:hover {
+  background: #ffffff;
+}
+
 .composer-surface {
   max-width: 960px;
   margin: 0 auto;
   padding: 18px;
-  border: 1px solid rgba(111, 126, 146, 0.14);
-  background: rgba(255, 252, 248, 0.92);
-  border-radius: 28px;
-  box-shadow: 0 24px 44px rgba(41, 51, 70, 0.08);
-  backdrop-filter: blur(12px);
+  border-top: 1px solid rgba(111, 126, 146, 0.16);
+  background: rgba(255, 252, 248, 0.86);
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .composer-header {
@@ -507,6 +627,12 @@ a {
   --el-input-border-color: rgba(111, 126, 146, 0.16);
   --el-input-hover-border-color: rgba(15, 118, 110, 0.28);
   --el-input-focus-border-color: rgba(15, 118, 110, 0.52);
+}
+
+.composer-input.is-compact .el-textarea__inner {
+  min-height: 52px;
+  padding-top: 14px;
+  padding-bottom: 14px;
 }
 
 .composer-input .el-textarea__inner::placeholder {
@@ -681,6 +807,7 @@ a {
   }
 
   .hero-stats,
+  .task-hero-stats,
   .welcome-panel {
     grid-template-columns: 1fr;
   }
@@ -705,9 +832,10 @@ a {
   }
 
   .workspace-hero,
+  .task-hero,
   .message-card,
   .composer-surface {
-    border-radius: 22px;
+    border-radius: 0;
   }
 
   .workspace-hero {
@@ -716,6 +844,10 @@ a {
 
   .hero-title {
     font-size: 28px;
+  }
+
+  .task-hero-title {
+    font-size: 24px;
   }
 
   .hero-stat {
@@ -729,6 +861,11 @@ a {
   .file-pill {
     align-items: flex-start;
     border-radius: 18px;
+  }
+
+  .jump-latest {
+    right: 20px;
+    bottom: 156px;
   }
 }
 </style>

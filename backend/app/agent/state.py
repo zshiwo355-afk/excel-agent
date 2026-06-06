@@ -13,6 +13,9 @@ class AgentState(BaseModel):
     uploaded_files: list[dict[str, Any]] = Field(default_factory=list)
     workbook_context: dict[str, Any] | None = None
     workbook_contexts: list[dict[str, Any]] = Field(default_factory=list)
+    goal_understanding: dict[str, Any] | None = None
+    workbook_semantics: dict[str, Any] | None = None
+    task_route: str = "edit"
     excel_plan: dict[str, Any] | None = None
     task_plan: dict[str, Any] | None = None
     task_mode: str = "simple"

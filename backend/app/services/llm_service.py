@@ -25,6 +25,34 @@ SYSTEM_PROMPT = """你是 ExcelPlan 生成器。
 10. 如果用户说一个公司一个表、按公司拆分、按门店拆分、按部门拆分、每个 xxx 一个 sheet，必须生成合法的 action/workbook_name/sheets。
 """
 
+GOAL_UNDERSTANDING_PROMPT = """You are an Excel task understanding model.
+Return JSON only.
+
+Extract:
+- task_route: edit, summary, or reshape
+- task_mode: simple or complex
+- user_goal: one-sentence summary
+- requested_operations: array of operations the user is asking for
+- output_expectation: what output workbook/sheet should be produced
+- risk_level: low, medium, or high
+- risk_reasons: array of short reasons
+- assumptions: array
+"""
+
+WORKBOOK_SEMANTIC_PROMPT = """You are an Excel workbook semantic analyzer.
+Return JSON only.
+
+Given workbook profiler output and the user goal, identify:
+- primary_workbooks
+- likely_data_sheets
+- likely_non_data_sheets
+- key_columns: date, amount, region, customer, product, quantity, and other important columns
+- mapping_hints: field aliases or possible alignments across files
+- detected_risks: array
+- recommended_task_route: edit, summary, or reshape
+- recommended_task_mode: simple or complex
+"""
+
 MERGE_KEYWORDS = ["合并", "汇总到一个表", "追加", "整合", "做成总表", "总表"]
 SPLIT_KEYWORDS = ["拆出来", "拆分", "一个公司一个表", "每个", "一个表", "一个sheet", "一个 sheet"]
 HEADER_ALIASES = {
@@ -60,6 +88,53 @@ class LLMService:
             base_url=self.settings.deepseek_base_url,
         )
 
+    def _json_completion(self, *, system_prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
+        client = self._client()
+        response = client.chat.completions.create(
+            model=self.settings.deepseek_model,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(to_jsonable(payload), ensure_ascii=False)},
+            ],
+            temperature=0.1,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise RuntimeError("DeepSeek returned an empty JSON response.")
+        return json.loads(content)
+
+    def generate_goal_understanding(
+        self,
+        *,
+        message: str,
+        workbook_contexts: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        if self.settings.use_mock_llm or not self.settings.deepseek_api_key:
+            return self._mock_goal_understanding(message, workbook_contexts or [])
+        payload = {
+            "user_request": message,
+            "workbook_count": len(workbook_contexts or []),
+            "workbook_names": [item.get("file_name") for item in (workbook_contexts or [])],
+        }
+        return self._json_completion(system_prompt=GOAL_UNDERSTANDING_PROMPT, payload=payload)
+
+    def analyze_workbook_semantics(
+        self,
+        *,
+        message: str,
+        workbook_contexts: list[dict[str, Any]] | None,
+        goal_understanding: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if self.settings.use_mock_llm or not self.settings.deepseek_api_key:
+            return self._mock_workbook_semantics(message, workbook_contexts or [], goal_understanding)
+        payload = {
+            "user_request": message,
+            "goal_understanding": goal_understanding or {},
+            "workbook_contexts": workbook_contexts or [],
+        }
+        return self._json_completion(system_prompt=WORKBOOK_SEMANTIC_PROMPT, payload=payload)
+
     def generate_excel_plan(
         self,
         message: str,
@@ -67,6 +142,9 @@ class LLMService:
         workbook_contexts: list[dict[str, Any]] | None,
         uploaded_file_path: str | None,
         uploaded_file_paths: list[str] | None,
+        goal_understanding: dict[str, Any] | None = None,
+        workbook_semantics: dict[str, Any] | None = None,
+        task_route: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | str]:
         if self.settings.use_mock_llm:
             raw = self._mock_excel_plan(
@@ -85,6 +163,9 @@ class LLMService:
             "uploaded_file_paths": uploaded_file_paths or [],
             "workbook_context": workbook_context,
             "workbook_contexts": workbook_contexts or [],
+            "goal_understanding": goal_understanding or {},
+            "workbook_semantics": workbook_semantics or {},
+            "task_route": task_route or "edit",
             "output_constraints": {
                 "supported_actions": ["create_workbook", "modify_workbook", "merge_workbooks"],
                 "supported_operations": [
@@ -111,22 +192,8 @@ class LLMService:
                 "sheet_name_max_length": 31,
             },
         }
-        safe_user_payload = to_jsonable(user_payload)
-
         try:
-            response = client.chat.completions.create(
-                model=self.settings.deepseek_model,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(safe_user_payload, ensure_ascii=False)},
-                ],
-                temperature=0.1,
-            )
-            content = response.choices[0].message.content
-            if not content:
-                raise RuntimeError("DeepSeek returned an empty response.")
-            raw_json = json.loads(content)
+            raw_json = self._json_completion(system_prompt=SYSTEM_PROMPT, payload=user_payload)
             normalized = self.normalize_excel_plan(raw_json, message, workbook_context, workbook_contexts)
             return normalized, raw_json
         except Exception as exc:
@@ -968,13 +1035,18 @@ class LLMService:
         self,
         message: str,
         workbook_contexts: list[dict[str, Any]],
+        goal_understanding: dict[str, Any] | None = None,
+        workbook_semantics: dict[str, Any] | None = None,
+        task_route: str | None = None,
     ) -> dict[str, Any]:
         if self.settings.use_mock_llm or not self.settings.deepseek_api_key:
             return self._mock_task_plan(message, workbook_contexts)
 
-        client = self._client()
         prompt = {
             "goal": message,
+            "goal_understanding": goal_understanding or {},
+            "workbook_semantics": workbook_semantics or {},
+            "task_route": task_route or "edit",
             "workbook_contexts": workbook_contexts,
             "requirements": {
                 "task_type": "complex_excel_workflow",
@@ -995,23 +1067,101 @@ class LLMService:
                 ],
             },
         }
-        safe_prompt = to_jsonable(prompt)
         try:
-            response = client.chat.completions.create(
-                model=self.settings.deepseek_model,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": "你是 TaskPlan 生成器，只返回 JSON，必须拆成多个 StepPlan。"},
-                    {"role": "user", "content": json.dumps(safe_prompt, ensure_ascii=False)},
-                ],
-                temperature=0.1,
+            raw_json = self._json_completion(
+                system_prompt="你是 TaskPlan 生成器，只返回 JSON，必须拆成多个 StepPlan。",
+                payload=prompt,
             )
-            content = response.choices[0].message.content
-            if not content:
-                raise RuntimeError("DeepSeek returned an empty TaskPlan response.")
-            return TaskPlan.model_validate(json.loads(content)).model_dump(mode="json")
+            return TaskPlan.model_validate(raw_json).model_dump(mode="json")
         except Exception:
             return self._mock_task_plan(message, workbook_contexts)
+
+    def _mock_goal_understanding(
+        self,
+        message: str,
+        workbook_contexts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        lowered = message.lower()
+        requested_operations = []
+        for keyword, operation in [
+            ("合并", "merge"),
+            ("汇总", "summarize"),
+            ("排序", "sort"),
+            ("删除", "delete"),
+            ("插入", "insert"),
+            ("拆分", "split"),
+            ("格式", "format"),
+            ("清洗", "clean"),
+        ]:
+            if keyword in message or keyword in lowered:
+                requested_operations.append(operation)
+        route = "edit"
+        if any(keyword in message for keyword in ["拆分", "拆出", "子表", "模板", "套模板", "格式整理"]):
+            route = "reshape"
+        elif len(workbook_contexts) >= 2 or any(keyword in message for keyword in ["合并", "汇总", "总表", "统计"]):
+            route = "summary"
+        is_complex = route == "summary" and len(workbook_contexts) >= 2
+        return {
+            "task_route": route,
+            "task_mode": "complex" if is_complex else "simple",
+            "user_goal": message,
+            "requested_operations": requested_operations or ["edit"],
+            "output_expectation": "processed workbook",
+            "risk_level": "medium" if is_complex else "low",
+            "risk_reasons": ["mock llm enabled"] if is_complex else [],
+            "assumptions": ["mock llm enabled"],
+        }
+
+    def _mock_workbook_semantics(
+        self,
+        message: str,
+        workbook_contexts: list[dict[str, Any]],
+        goal_understanding: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        data_sheets = []
+        mapping_hints = []
+        for workbook in workbook_contexts:
+            workbook_name = workbook.get("file_name")
+            for sheet in workbook.get("sheets", []):
+                headers = sheet.get("headers", [])
+                if headers:
+                    data_sheets.append(
+                        {
+                            "file_name": workbook_name,
+                            "file_id": workbook.get("file_id"),
+                            "sheet_name": sheet.get("name"),
+                            "headers": headers,
+                        }
+                    )
+                    mapping_hints.extend(headers[:5])
+        return {
+            "primary_workbooks": [item.get("file_name") for item in workbook_contexts],
+            "likely_data_sheets": data_sheets,
+            "likely_non_data_sheets": [],
+            "key_columns": {
+                "date": [header for header in mapping_hints if "日期" in header or "时间" in header],
+                "amount": [header for header in mapping_hints if "金额" in header or "销售额" in header],
+                "region": [header for header in mapping_hints if "地区" in header or "区域" in header],
+                "customer": [header for header in mapping_hints if "客户" in header or "门店" in header],
+                "product": [header for header in mapping_hints if "产品" in header or "商品" in header],
+            },
+            "mapping_hints": mapping_hints,
+            "detected_risks": ["mock llm enabled"] if len(workbook_contexts) > 1 else [],
+            "recommended_task_route": (
+                "summary"
+                if len(workbook_contexts) > 1
+                else (
+                    goal_understanding.get("task_route")
+                    if goal_understanding and goal_understanding.get("task_route")
+                    else "edit"
+                )
+            ),
+            "recommended_task_mode": (
+                goal_understanding.get("task_mode")
+                if goal_understanding and goal_understanding.get("task_mode")
+                else ("complex" if len(workbook_contexts) > 1 else "simple")
+            ),
+        }
 
     def _mock_task_plan(self, message: str, workbook_contexts: list[dict[str, Any]]) -> dict[str, Any]:
         merge_plan = self._build_merge_plan(workbook_contexts, target_sheet_name="合并明细")
